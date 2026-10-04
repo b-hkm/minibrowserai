@@ -1,3 +1,4 @@
+#include <iostream>
 #include "extractor.h"
 
 #include <algorithm>
@@ -649,6 +650,17 @@ static bool tryYtDlp_(const std::string& pageUrl, ResolvedMedia& out,
     }
     std::vector<std::string> lines = readAllLines(p);
     int rc = ::pclose(p);
+
+    // v2.12: log what yt-dlp returned so we can diagnose audio issues.
+    // If yt-dlp picked a video-only DASH format, the URL will point to
+    // a file with no audio track — that's the "buzz sound" root cause.
+    std::cerr << "[extractor] " << tool << " returned " << lines.size()
+              << " line(s), rc=" << rc;
+    if (!lines.empty()) {
+        std::cerr << " — first: " << lines[0].substr(0, 80);
+        if (lines.size() > 1) std::cerr << " — second: " << lines[1].substr(0, 80);
+    }
+    std::cerr << "\n";
 
     // Parse: first line must look like a URL.
     ResolvedMedia rm;

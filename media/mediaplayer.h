@@ -173,11 +173,16 @@ private:
     std::atomic<bool> previewFrameDone_{false};
 
     // Audio output (created on the worker, torn down in close()).
+    // v2.12: pcm_ is now std::vector<uint8_t> (bytes) instead of int16_t
+    // because the audio device format can be either S16 or F32 — the
+    // callback treats the bytes as the device's native format.
     std::mutex audioM_;
-    std::vector<int16_t> pcm_;      // interleaved stereo s16 buffer
+    std::vector<uint8_t> pcm_;      // interleaved stereo, format = audioFmt_
     size_t pcmPos_ = 0;
     unsigned int audioDev_ = 0;
     int audioRate_ = 0;
+    int audioFmt_ = 0;             // SDL_AudioFormat (AUDIO_F32SYS etc.)
+    int outBytesPerSample_ = 4;    // 4 for F32, 2 for S16 (set by swr setup)
     std::atomic<float> volume_{0.9f};
     std::atomic<bool> muted_{false};
 

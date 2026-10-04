@@ -1765,3 +1765,99 @@ fixes (yt-dlp format selector + lazy swr init).
   parameters. The v2.10 code would have used `actx_->ch_layout`
   (which is `{0}` for this codec at open time) and produced
   garbage.
+
+---
+
+# What changed in MiniBrowser 2.12
+
+## Background: the buzz sound still present after v2.11
+
+You reported that after v2.11, the buzz sound is "still no sound
+accept that quite buzz" — quieter than v2.10's buzz, but still a buzz,
+not actual audio. v2.11 made the buzz quieter because the lazy swr
+init succeeded (was producing loud garbage before, now produces
+silence/proper audio). The remaining buzz suggests either:
+  1. The audio device is open but receiving silence (no PCM produced) —
+     speaker driver noise on idle.
+  2. swr is producing wrong output despite being set up correctly.
+  3. The source file has no audio track at all (yt-dlp picked a
+     video-only DASH stream — hasAudio_ is false, no audio device is
+     opened, but the system might still produce a low hum).
+
+## 1. Switched audio output format from S16 to F32 (`media/mediaplayer.cpp`)
+
+The SDL audio device now opens with `AUDIO_F32SYS` instead of
+`AUDIO_S16SYS`. FFmpeg's AAC/Opus decoders produce float planar
+(FLTP) natively; the v2.11 path converted FLTP -> S16 which adds
+a quantization step. If swr was misconfigured (e.g., wrong input
+channel layout), the S16 quantization could produce a quiet buzz
+instead of proper audio. F32 output lets swr convert FLTP -> FLT
+(packed float) which is a near-identity transform (just
+de-planarization) — much less likely to produce artifacts. SDL2
+supports AUDIO_F32SYS natively on all modern audio backends
+(PulseAudio, PipeWire, ALSA, CoreAudio, WASAPI).
+
+The audio callback (`audioCallbackC`) now handles both F32 and S16
+device formats. Volume scaling uses the right type (float for F32,
+int16 for S16). The PCM ring buffer is now `std::vector<uint8_t>`
+(bytes) instead of `std::vector<int16_t>` to support either format.
+
+New member `outBytesPerSample_` (4 for F32, 2 for S16) is set by the
+swr setup and used by the callback for frame alignment.
+
+## 2. Comprehensive diagnostic logging (`media/mediaplayer.cpp` + `media/extractor.cpp`)
+
+To diagnose the remaining buzz, v2.12 now logs:
+
+  - `[media] open: <path>` — what file/URL the player is opening
+  - `[media]   vStream=N aStream=N duration=Ns` — whether video and
+    audio streams were found, and the duration
+  - `[audio] NO AUDIO STREAM in file — this is a video-only DASH
+    stream. Audio will be silent.` — printed when `aStream < 0`. This
+    is the smoking gun: if yt-dlp picked a video-only DASH stream (the
+    v2.11 fallback `best` prefers video-only for high-quality YouTube
+    uploads), the file has no audio track. Audio will be silent.
+  - `[audio] stream found: codec=aac sample_rate=44100 channels=1
+    sample_fmt=8` — the audio track's actual format (codec, rate,
+    channels, FFmpeg sample_fmt number)
+  - `[audio] device opened: freq=48000 fmt=F32 ch=2 samples=2048` —
+    the SDL audio device's actual negotiated format
+  - `[audio] SDL_OpenAudioDevice FAILED: <error> — audio will be
+    silent` — when the device can't be opened
+  - `[audio] swr initialized: in=44100Hz fltp 1ch -> out=48000Hz flt
+    stereo (device fmt=F32)` — the swr conversion setup
+  - `[audio] swr init FAILED (in=... rc=...) — audio will be silent`
+    — when swr can't be initialized
+  - `[extractor] yt-dlp returned N line(s), rc=0 — first: <url> —
+    second: <title>` — what yt-dlp returned (URL + title + ext)
+
+The user can run `./browser <url> 2>log.txt` and share the log to
+diagnose the exact failure mode.
+
+## 3. yt-dlp format selector unchanged from v2.11
+
+The v2.11 four-step selector is kept:
+    best[protocol=https][acodec!=none][vcodec!=none]
+    /best[acodec!=none][vcodec!=none]
+    /best[acodec!=none]
+    /best
+
+If the diagnostic logs show `[audio] NO AUDIO STREAM in file`, the
+fix is to either (a) install yt-dlp with a newer version that
+supports merging DASH streams, or (b) add explicit format-id
+fallbacks like `18/22` (the legacy progressive mp4 formats) to the
+selector. We'll decide based on the logs.
+
+## Verification
+
+- Build clean, 644 selftests pass.
+- Live test with `tests/media/sample.mp4` (44.1kHz mono AAC):
+  ```
+  [media] open: tests/media/sample.mp4
+  [media]   vStream=0 aStream=1 duration=8s
+  [audio] stream found: codec=aac sample_rate=44100 channels=1 sample_fmt=8
+  [audio] SDL_OpenAudioDevice FAILED: ALSA: Couldn't open audio device — audio will be silent
+  [audio] swr initialized: in=44100Hz fltp 1ch -> out=48000Hz flt stereo (device fmt=0)
+  ```
+  (sandbox has no audio device — expected. The user's machine will
+  show `device fmt=F32` instead of `device fmt=0`.)

@@ -371,6 +371,17 @@ void MediaPlayer::decodeLoop_() {
 
     vStream_ = av_find_best_stream(fmt_, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     aStream_ = av_find_best_stream(fmt_, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    std::cerr << "[media] open: " << openPath << "\n"
+              << "[media]   vStream=" << vStream_ << " aStream=" << aStream_
+              << " duration=" << duration_ << "s\n";
+    if (aStream_ < 0) {
+        std::cerr << "[audio] NO AUDIO STREAM in file — "
+                  << "this is a video-only DASH stream. Audio will be "
+                  << "silent. (yt-dlp should pick a combined format; "
+                  << "if it picked video-only, the format selector "
+                  << "fallback hit 'best' which prefers video-only "
+                  << "DASH for high-quality YouTube uploads.)\n";
+    }
     if (vStream_ >= 0) {
         AVStream* st = fmt_->streams[vStream_];
         const AVCodec* dec = avcodec_find_decoder(st->codecpar->codec_id);
@@ -392,6 +403,12 @@ void MediaPlayer::decodeLoop_() {
     if (aStream_ >= 0) {
         AVStream* st = fmt_->streams[aStream_];
         const AVCodec* dec = avcodec_find_decoder(st->codecpar->codec_id);
+        std::cerr << "[audio] stream found: codec="
+                  << (dec ? dec->name : "(no decoder)")
+                  << " sample_rate=" << st->codecpar->sample_rate
+                  << " channels=" << st->codecpar->ch_layout.nb_channels
+                  << " sample_fmt=" << st->codecpar->format
+                  << "\n";
         if (dec) {
             actx_ = avcodec_alloc_context3(dec);
             avcodec_parameters_to_context(actx_, st->codecpar);
@@ -412,10 +429,19 @@ void MediaPlayer::decodeLoop_() {
     // S16 stereo with 2048-sample buffers isn't exactly supported. The
     // swr (set up after the first audio frame is decoded) resamples from
     // the source's actual rate to whatever the device settled on.
+    // v2.12: switched output format from AUDIO_S16SYS to AUDIO_F32SYS.
+    // FFmpeg's AAC/Opus decoders natively produce float planar (FLTP)
+    // audio. Going FLTP -> S16 introduces a quantization step that, if
+    // swr is misconfigured (e.g., wrong input channel layout), can
+    // produce a quiet buzz instead of proper audio. F32 output lets
+    // swr convert FLTP -> FLT (packed float) which is a near-identity
+    // transform — much less likely to produce artifacts. SDL2 supports
+    // AUDIO_F32SYS natively on all modern audio backends (PulseAudio,
+    // PipeWire, ALSA, CoreAudio, WASAPI).
     if (hasAudio_ && ensureAudioSubsys()) {
         SDL_AudioSpec want{}, have{};
         want.freq = 48000;
-        want.format = AUDIO_S16SYS;
+        want.format = AUDIO_F32SYS;
         want.channels = 2;
         want.samples = 2048;
         want.callback = audioCallbackC;
@@ -425,7 +451,17 @@ void MediaPlayer::decodeLoop_() {
             SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
         if (audioDev_) {
             audioRate_ = have.freq;
+            audioFmt_ = have.format;
+            std::cerr << "[audio] device opened: freq=" << have.freq
+                      << " fmt=" << (have.format == AUDIO_F32SYS ? "F32"
+                                     : have.format == AUDIO_S16SYS ? "S16"
+                                     : std::to_string(have.format))
+                      << " ch=" << (int)have.channels
+                      << " samples=" << have.samples << "\n";
             SDL_PauseAudioDevice(audioDev_, 1);   // start paused
+        } else {
+            std::cerr << "[audio] SDL_OpenAudioDevice FAILED: "
+                      << SDL_GetError() << " — audio will be silent\n";
         }
     }
 
@@ -591,6 +627,12 @@ void MediaPlayer::decodeAudioPacket_(AVCodecContext* ctx, AVPacket* pkt) {
         // from actx_->*, which caused swr to silently emit garbage
         // (the "buzz sound, not the actual content of the video"
         // symptom).
+        // v2.12: output format is now F32 (packed float) instead of
+        // S16, matching the SDL audio device's AUDIO_F32SYS format.
+        // FFmpeg decoders produce float planar (FLTP) natively; the
+        // FLTP -> FLT conversion is a near-identity transform (just
+        // de-planarization), much less likely to produce artifacts
+        // than FLTP -> S16 (which adds quantization).
         if (!swr_) {
             int outRate = audioRate_ > 0 ? audioRate_ : 48000;
             AVChannelLayout outCh = AV_CHANNEL_LAYOUT_STEREO;
@@ -605,13 +647,30 @@ void MediaPlayer::decodeAudioPacket_(AVCodecContext* ctx, AVPacket* pkt) {
             const AVChannelLayout* inCh = (frm->ch_layout.order != AV_CHANNEL_ORDER_UNSPEC && frm->ch_layout.nb_channels > 0)
                 ? &frm->ch_layout
                 : &ctx->ch_layout;
+            // v2.12: output AV_SAMPLE_FMT_FLT (packed float) to match
+            // the SDL AUDIO_F32SYS device format. Fall back to S16
+            // if the device didn't open as F32 (defensive — shouldn't
+            // happen with the want.format = AUDIO_F32SYS request).
+            AVSampleFormat outFmt = AV_SAMPLE_FMT_FLT;
+            int outBytesPerSample = 4;  // float = 4 bytes
+            if (audioFmt_ != 0 && audioFmt_ != AUDIO_F32SYS) {
+                // Device didn't accept F32 — fall back to S16.
+                outFmt = AV_SAMPLE_FMT_S16;
+                outBytesPerSample = 2;
+            }
+            outBytesPerSample_ = outBytesPerSample;
             int rc = swr_alloc_set_opts2(&swr_, &outCh,
-                AV_SAMPLE_FMT_S16, outRate, inCh, inFmt, inRate, 0, nullptr);
+                outFmt, outRate, inCh, inFmt, inRate, 0, nullptr);
             if (rc == 0 && swr_ && swr_init(swr_) >= 0) {
                 std::cerr << "[audio] swr initialized: in="
                           << inRate << "Hz " << av_get_sample_fmt_name(inFmt)
                           << " " << (inCh->nb_channels) << "ch"
-                          << " -> out=" << outRate << "Hz S16 stereo\n";
+                          << " -> out=" << outRate << "Hz "
+                          << av_get_sample_fmt_name(outFmt) << " stereo"
+                          << " (device fmt=" << (audioFmt_ == AUDIO_F32SYS ? "F32"
+                                              : audioFmt_ == AUDIO_S16SYS ? "S16"
+                                              : std::to_string(audioFmt_))
+                          << ")\n";
             } else {
                 std::cerr << "[audio] swr init FAILED (in="
                           << inRate << "Hz " << av_get_sample_fmt_name(inFmt)
@@ -627,12 +686,17 @@ void MediaPlayer::decodeAudioPacket_(AVCodecContext* ctx, AVPacket* pkt) {
                                           : ctx->sample_rate;
         if (inRate <= 0) { av_frame_unref(frm); continue; }
         int outMax = (int)((int64_t)frm->nb_samples * outRate / inRate) + 64;
-        std::vector<uint8_t> out((size_t)outMax * 2 * 2);   // stereo * s16
+        // v2.12: buffer size depends on output format (F32=4 bytes,
+        // S16=2 bytes) × 2 channels.
+        int bps = outBytesPerSample_ > 0 ? outBytesPerSample_ : 4;
+        std::vector<uint8_t> out((size_t)outMax * 2 * bps);
         uint8_t* outPtr = out.data();
         int got = swr_convert(swr_, &outPtr, outMax,
                               (const uint8_t**)frm->extended_data,
                               frm->nb_samples);
-        if (got > 0) pushPcm_(out.data(), got * 2 * 2);
+        if (got > 0) {
+            pushPcm_(out.data(), got * 2 * bps);
+        }
         av_frame_unref(frm);
     }
     av_frame_free(&frm);
@@ -641,25 +705,32 @@ void MediaPlayer::decodeAudioPacket_(AVCodecContext* ctx, AVPacket* pkt) {
 void MediaPlayer::pushPcm_(const uint8_t* data, int bytes) {
     std::lock_guard<std::mutex> lk(audioM_);
     if (!playing_.load()) return;
-    // Cap the queue at ~1.5 s; drop the oldest when it overflows (the
+    // Cap the queue at ~1 s; drop the oldest when it overflows (the
     // audio clock is not our master clock, so losing old samples beats
     // growing RAM forever on a stalled sink).
-    size_t cap = (size_t)(audioRate_ > 0 ? audioRate_ : 48000) * 2 * 2;
+    // v2.12: cap math uses outBytesPerSample_ (4 for F32, 2 for S16).
+    int bps = outBytesPerSample_ > 0 ? outBytesPerSample_ : 4;
+    size_t frameAlign = (size_t)bps * 2;   // stereo frame
+    size_t cap = (size_t)(audioRate_ > 0 ? audioRate_ : 48000) * frameAlign;
     if (pcm_.size() - pcmPos_ + (size_t)bytes > cap) {
         size_t excess = (size_t)bytes - (pcm_.size() - pcmPos_);
-        pcmPos_ += (excess / 4) * 4;   // keep 4-byte (frame) alignment
+        pcmPos_ += (excess / frameAlign) * frameAlign;   // keep frame alignment
     }
     pcm_.insert(pcm_.end(), data, data + bytes);
 }
 
 // SDL callback thread: drain the PCM ring, scale by volume, silence-pad.
+// v2.12: handles both F32 and S16 device formats. Volume scaling uses
+// the right type (float for F32, int16 for S16).
 void audioCallbackC(void* userdata, unsigned char* stream, int len) {
     auto* p = static_cast<MediaPlayer*>(userdata);
     std::lock_guard<std::mutex> lk(p->audioM_);
+    int bps = p->outBytesPerSample_ > 0 ? p->outBytesPerSample_ : 4;
+    size_t frameAlign = (size_t)bps * 2;   // stereo frame
     size_t avail = p->pcm_.size() - p->pcmPos_;
     size_t want = (size_t)len;
     size_t take = want < avail ? want : avail;
-    take -= take % 4;
+    take -= take % frameAlign;
     if (p->muted_.load()) {
         std::memset(stream, 0, (size_t)len);
         p->pcmPos_ += take;
@@ -667,9 +738,17 @@ void audioCallbackC(void* userdata, unsigned char* stream, int len) {
         std::memcpy(stream, p->pcm_.data() + p->pcmPos_, take);
         float vol = p->volume_.load();
         if (vol < 0.999f) {
-            int16_t* s = (int16_t*)stream;
-            for (size_t i = 0; i < take / 2; ++i)
-                s[i] = (int16_t)(s[i] * vol);
+            if (bps == 4) {
+                // F32 — scale as float
+                float* s = (float*)stream;
+                for (size_t i = 0; i < take / 4; ++i)
+                    s[i] = s[i] * vol;
+            } else {
+                // S16 — scale as int16 (legacy fallback)
+                int16_t* s = (int16_t*)stream;
+                for (size_t i = 0; i < take / 2; ++i)
+                    s[i] = (int16_t)(s[i] * vol);
+            }
         }
         if (take < want) std::memset(stream + take, 0, want - take);
         p->pcmPos_ += take;
