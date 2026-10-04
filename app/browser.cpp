@@ -1116,33 +1116,38 @@ static std::string aboutHomeHtml() {
     return R"HTML(<html><head><title>MiniBrowser Home</title></head>
 <body style="font-family: sans-serif">
 <div style="background: #1a4fa0; padding: 24px">
-  <h1 style="font-size: 36px; color: #ffffff">MiniBrowser 2.8</h1>
+  <h1 style="font-size: 36px; color: #ffffff">MiniBrowser 2.9</h1>
   <p style="color: #cfe0ff">A tiny SDL2 browser with real HTTP/HTTPS, a Duktape
-  JavaScript engine and CSS styling. Round 13: hybrid rendering. v2.7 removed
-  the YouTube / DuckDuckGo lite shims and switched to a real Chrome User-Agent
-  + Sec-Fetch-* headers so the actual services stop treating the browser as a
-  bot — but YouTube / Google / DuckDuckGo are all JavaScript SPAs, and the
-  Duktape ES5.1 engine cannot run their modern ES6+ code, so the SPA shells
-  rendered blank (just the footer / chrome). v2.8 brings back a YouTube
-  data-extractor that reads the ytInitialData / ytInitialPlayerResponse JSON
-  already embedded in the page (the Chrome UA guarantees it is there) and
-  renders a clean static page — branded just "YouTube" (not "Lite") because
-  it is the actual page's data, not an alternative site. Address-bar search
-  now goes to the real server-rendered DuckDuckGo at
-  html.duckduckgo.com/html (not the lite.duckduckgo.com/lite endpoint you
-  asked to remove — that was a different "lite" alternative; this is the same
-  DuckDuckGo service, just server-rendered HTML, no JS required). On top of
-  round 12's Chrome UA, round 11's Piped-API fallback, round 10's yt-dlp
-  bridge and round 9's internal media stack (&lt;video&gt; and &lt;audio&gt;
-  decode in-process), the image viewer, the element-geometry API
-  (getBoundingClientRect / offset*), HTML5 implied end tags, text selection
-  and the expanded JS DOM API.</p>
+  JavaScript engine and CSS styling. Round 14: more like Chrome than ever.
+  v2.8 made the browser pretend to be Chrome (UA + Sec-Fetch-* + Sec-CH-UA
+  basics) and reintroduced a YouTube ytInitialData data-extractor + the real
+  server-rendered DDG html endpoint. v2.9 now sends the FULL Chrome 120
+  client-hints bundle on every navigation (Sec-CH-UA-Full-Version-List, Arch,
+  Bitness, Model, Platform-Version, Form-Factors, WoW64, DPR, Viewport-Width,
+  Width, Device-Memory, X-Client-Data, Priority) — these are the headers a
+  real Chrome 120 sends that v2.8 was missing, and sites like Google check
+  for their presence more than their content. Plus three more
+  Chrome-matching features: <b>HTTP/2</b> (Chrome uses h2 by default; some
+  sites treat HTTP/1.1 as a bot signal), <b>cookie jar persistence</b>
+  ($HOME/.cache/minibrowser/cookies.txt — YouTube's VISITOR_INFO1_LIVE /
+  __Secure-YNID session cookies now stick across requests AND across
+  process restarts, exactly like a real Chrome session), and <b>Referer
+  header tracking</b> (in-site navigations send Referer: &lt;previous
+  URL&gt;, just like Chrome). The Expect: 100-continue header that libcurl
+  adds by default is also suppressed (real Chrome never sends it on GETs).
+  On top of round 13's hybrid rendering, round 12's Chrome UA, round 11's
+  Piped-API fallback, round 10's yt-dlp bridge and round 9's internal
+  media stack (&lt;video&gt; and &lt;audio&gt; decode in-process), the
+  image viewer, the element-geometry API (getBoundingClientRect /
+  offset*), HTML5 implied end tags, text selection and the expanded JS
+  DOM API.</p>
 </div>
 <h2>Try it out</h2>
 <ul>
   <li><a href="https://example.com">https://example.com</a> — real HTTPS fetch</li>
-  <li><a href="https://www.youtube.com">https://www.youtube.com</a> — YouTube home rendered from ytInitialData (data-extractor, not a "lite" page)</li>
-  <li><a href="https://www.google.com/search?q=test">google.com/search?q=test</a> — real Google page (loads but renders mostly blank — Google is a JS SPA)</li>
+  <li><a href="https://www.youtube.com">https://www.youtube.com</a> — YouTube home (data-extractor renders the search box + category shortcuts)</li>
+  <li><a href="https://www.youtube.com/results?search_query=hello">YouTube search</a> — renders real results from ytInitialData JSON</li>
+  <li><a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ">YouTube watch</a> — Piped API resolves the stream URL → in-browser media player</li>
   <li><a href="media.html">media.html</a> — internal video + audio player demo</li>
   <li><a href="test.html">test.html</a> — the local feature tour</li>
   <li><a href="page2.html">page2.html</a> — a second local page</li>
@@ -1153,7 +1158,9 @@ static std::string aboutHomeHtml() {
 play it right on the page. Paste a YouTube watch link to play it internally
 (needs <b>yt-dlp</b>: <code>pip install yt-dlp</code>; progressive quality).
 Type a phrase like "hello world" in the address bar to search DuckDuckGo
-(server-rendered HTML view).</p>
+(server-rendered HTML view). Cookies are persisted at
+<code>$HOME/.cache/minibrowser/cookies.txt</code> — delete that file to
+clear your session.</p>
 <h2>Keyboard shortcuts</h2>
 <p>Ctrl+L address bar · Ctrl+F find · Ctrl++/− zoom · Ctrl+U view source ·
 Ctrl+S save page · Ctrl+D bookmark · Ctrl+B bookmarks bar · Ctrl+C copy

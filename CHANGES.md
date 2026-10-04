@@ -1441,3 +1441,107 @@ statically.
 - `about:home` bumped to 2.8 / round 13; description now reflects
   the hybrid approach (Chrome UA + YouTube data-extractor + DDG html
   endpoint); "Try it out" link list updated with the new behaviour.
+
+---
+
+# What changed in MiniBrowser 2.9
+
+v2.8 made the browser pretend to be Chrome (UA + Sec-Fetch-* + Sec-CH-UA
+basics) and reintroduced the YouTube ytInitialData data-extractor + the
+real server-rendered DDG html endpoint. v2.9 makes the impersonation
+deeper — the full Chrome 120 client-hints bundle, HTTP/2, persistent
+cookie jar, Referer tracking, and Expect header suppression.
+
+Investigation: even with the v2.8 Chrome UA + Sec-Fetch-* headers, YouTube
+served a 429 + redirect to `google.com/sorry/` on watch URLs from
+datacenter IPs. Adding the full client-hints bundle + curl-impersonate
+(which matches Chrome's BoringSSL TLS fingerprint exactly) STILL gets
+429'd — the block is at the IP level, not the TLS/HTTP fingerprint
+level. From a residential IP, the v2.8 code already works for search
+(`videoId count: 365` in the search JSON) and Piped works for watch
+playback. v2.9's improvements help on residential IPs and at the
+margins of bot detection.
+
+## 1. Full Chrome 120 client-hints bundle (`net/fetch.cpp`)
+
+- v2.8 sent Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform.
+- v2.9 adds the full set Chrome 120 sends on every navigation:
+  `Sec-CH-UA-Full-Version-List` (with full version of every brand, not
+  just the major — Google uses this to distinguish real Chrome from the
+  spoofable basic Sec-CH-UA), `Sec-CH-UA-Full-Version`,
+  `Sec-CH-UA-Arch: "x86"`, `Sec-CH-UA-Bitness: "64"`,
+  `Sec-CH-UA-Model: ""`, `Sec-CH-UA-Platform-Version: "6.5.0"`,
+  `Sec-CH-UA-Form-Factors: "Desktop"`, `Sec-CH-UA-WoW64: ?0`,
+  `Sec-CH-DPR: 1`, `Sec-CH-Viewport-Width: 1024`, `Sec-CH-Width: 1024`,
+  `Device-Memory: 8`, `X-Client-Data: CIm2yQEIpt3JAULckK8FBLjTzAEIzufA`
+  (Chrome-specific opaque base64 blob; sites check for its presence more
+  than its specific content), `Priority: u=0, i` (HTTP/2 priority hint),
+  and `Expect:` (empty, suppresses the libcurl default
+  `Expect: 100-continue` that real Chrome never sends on GETs).
+
+## 2. HTTP/2 (`net/fetch.cpp`)
+
+- `CURLOPT_HTTP_VERSION = CURL_HTTP_VERSION_2_0`. Chrome uses h2 by
+  default for HTTPS; some sites (notably Google properties) treat
+  HTTP/1.1 requests as a strong bot signal because no real Chrome user
+  is on HTTP/1.1 anymore. libcurl supports h2 with the system nghttp2.
+
+## 3. Persistent cookie jar (`net/fetch.cpp`)
+
+- New `cookieJarPath()` returns `$HOME/.cache/minibrowser/cookies.txt`
+  (the parent dir is created on first call via `mkdir -p`).
+- `CURLOPT_COOKIEFILE` reads cookies from the jar before each request;
+  `CURLOPT_COOKIEJAR` declares the file as the write target.
+- Critical bug fix: libcurl's `CURLOPT_COOKIEJAR` only writes the file
+  on `curl_easy_cleanup`, but our per-thread handle is REUSED across
+  requests (for the connection cache) and NEVER cleaned up. The
+  `CURLOPT_COOKIELIST = "FLUSHALL"` command word is documented as
+  flushing immediately, but in practice it only clears the
+  "new cookies" flag — the actual file write still requires cleanup.
+  Verified by a minimal libcurl test (cookie_test2.cpp): without
+  cleanup, the jar file is NOT created even after FLUSHALL.
+- Fix: extract the in-memory cookies via
+  `curl_easy_getinfo(curl, CURLINFO_COOKIELIST, &cookies)` (each entry
+  comes back in Netscape cookie file format already) and write them to
+  the jar file ourselves after each `curl_easy_perform`. The handle can
+  stay reused for the connection cache, and YouTube's session cookies
+  (VISITOR_INFO1_LIVE, __Secure-YNID, GPS, YSC, __Secure-ROLLOUT_TOKEN)
+  now persist across requests AND across process restarts.
+- Live verification: `cookies.txt` is written after the first YouTube
+  fetch, containing all 7 of YouTube's session cookies. Subsequent
+  fetches read them back via `CURLOPT_COOKIEFILE`.
+
+## 4. Referer header tracking (`net/fetch.{h,cpp}`)
+
+- New `setReferer(const std::string& url)` exported in fetch.h.
+  Callers can set the Referer for the next fetchUrl() call to the URL
+  of the page the user is currently on. When set, the request sends
+  `Referer: <url>` and `Sec-Fetch-Site: same-origin` (instead of
+  `Sec-Fetch-Site: none` for top-level typed URLs). Mimics Chrome's
+  exact behaviour for in-site navigations.
+
+## 5. About page
+
+- `about:home` bumped to 2.9 / round 14. Description now lists the
+  full client-hints bundle, HTTP/2, cookie jar, and Referer tracking.
+  "Try it out" link list updated with explicit YouTube search / watch
+  links. Tip mentions the cookie jar file path so the user knows where
+  to delete it to clear their session.
+
+## 6. Tests
+
+- All 644 selftests still pass (no new tests needed for v2.9 since the
+  changes are at the network layer; the v2.8 assertions for the
+  YouTube extractor and the DDG html endpoint are unchanged).
+
+## 7. What's NOT here
+
+- libcurl-impersonate integration: the library crashes (segfault) on
+  every `curl_easy_impersonate()` call when linked directly into our
+  binary, regardless of the target value (1-15) or whether curl_global_init
+  is called first. Likely a binary incompatibility with our libstdc++
+  / glibc combo that I couldn't debug in this sandbox. Even when working
+  (via the curl-impersonate-chrome binary), YouTube STILL serves 429
+  from datacenter IPs — confirming the block is IP-level, not
+  TLS-fingerprint-level. From residential IPs the v2.8 code already
+  works for search; v2.9's improvements help at the margins.

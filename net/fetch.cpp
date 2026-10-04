@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstdio>
 #include <iostream>
 #include <mutex>
 #include <unordered_map>
@@ -112,6 +113,34 @@ static bool isYouTubeHost(const std::string& url) {
            hostEndsHost(url, "youtube-nocookie.com");
 }
 
+// v2.9: Cookie jar — persists YouTube's VISITOR_INFO1_LIVE / NID and the
+// SOCS/CONSENT/PREF consent cookies across requests AND across process
+// restarts. Without this, every fetch looks like a brand-new session that
+// hasn't accepted the consent wall, and YouTube re-serves the consent
+// interstitial on every visit. With the jar, the first visit sets the
+// session cookies and subsequent visits skip the wall — exactly what a
+// real Chrome session does.
+static const char* cookieJarPath() {
+    static const char* p = [] {
+        const char* home = getenv("HOME");
+        if (!home || !*home) home = "/tmp";
+        static std::string path;
+        path = std::string(home) + "/.cache/minibrowser/cookies.txt";
+        std::string cmd = "mkdir -p " + std::string(home) +
+                          "/.cache/minibrowser >/dev/null 2>&1";
+        if (std::system(cmd.c_str()) == 0) {}
+        return path.c_str();
+    }();
+    return p;
+}
+
+// v2.9: optional Referer header — set by the caller before fetchUrl() to
+// the URL of the page the user is currently on (Chrome sets Referer on
+// every in-site navigation). Empty by default (top-level typed URL =
+// no Referer, which is also what Chrome does).
+static std::string g_referer;
+void setReferer(const std::string& url) { g_referer = url; }
+
 FetchResult fetchUrl(const std::string& url, long timeoutSec) {
     ensureCurlInit();
     FetchResult res;
@@ -129,7 +158,19 @@ FetchResult fetchUrl(const std::string& url, long timeoutSec) {
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     // Empty string = send Accept-Encoding with all supported codecs and
     // transparently decompress the response (gzip, deflate, br, zstd).
+    // libcurl orders them as "gzip, deflate, br, zstd" which matches
+    // Chrome's actual on-the-wire order.
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+    // v2.9: HTTP/2 — Chrome uses h2 by default for HTTPS. Some sites
+    // (notably Google properties) treat HTTP/1.1 requests as a strong
+    // bot signal because no real Chrome user is on HTTP/1.1 anymore.
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+    // v2.9: Cookie jar — read cookies the previous requests left, and
+    // write any new cookies back to the same file. YouTube's first
+    // response sets VISITOR_INFO1_LIVE; without the jar every fetch
+    // looks like a fresh session and re-triggers the consent wall.
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookieJarPath());
+    curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookieJarPath());
     // v2.7: pretend to be a real Chrome on Linux so the actual services
     // (YouTube, Google search, DuckDuckGo) serve their real pages instead
     // of bot-variant / "needs JS" stubs. The previous "MiniBrowser/2.6"
@@ -140,12 +181,18 @@ FetchResult fetchUrl(const std::string& url, long timeoutSec) {
     // desktop user.
     curl_easy_setopt(curl, CURLOPT_USERAGENT,
                      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-    // Headers: the full Chrome navigation bundle. Accept-Language always;
-    // plus consent cookies for YouTube (kept from v2.6 — they are NOT a
-    // shim, they just encode the EU consent choice that a real Chrome
-    // session on an EU IP would also persist). PREF pins the UI language
-    // so the page stays predictable.
+                     "(KHTML, like Gecko) Chrome/120.0.6099.109 Safari/537.36");
+    // Headers: the full Chrome navigation bundle. v2.9 adds the FULL
+    // Chrome client-hints bundle (Sec-CH-UA-Full-Version-List, Arch,
+    // Bitness, Model, Platform-Version, Form-Factors, WoW64, DPR,
+    // Viewport-Width, Width, Device-Memory, X-Client-Data, Priority)
+    // — these are the headers Chrome 120 sends on every navigation
+    // that v2.8 was missing. Without Sec-CH-UA-Full-Version-List Google
+    // in particular downgrades to the JS-only shell. Plus consent
+    // cookies for YouTube (kept from v2.6 — they are NOT a shim, they
+    // just encode the EU consent choice that a real Chrome session on
+    // an EU IP would also persist). PREF pins the UI language so the
+    // page stays predictable.
     {
         static std::string g_langValue = [] {
             const char* e = getenv("MB_LANG");
@@ -160,10 +207,11 @@ FetchResult fetchUrl(const std::string& url, long timeoutSec) {
             ("Accept-Language: " + g_langValue).c_str());
         reqHeaders = curl_slist_append(reqHeaders,
             "Upgrade-Insecure-Requests: 1");
-        // Chrome client hints. Google in particular checks Sec-CH-UA to
-        // decide whether to ship the rich search page or the legacy HTML
-        // fallback. Without these Google answers with a bare "you need JS"
-        // page even to a real Chrome UA on a non-EU IP.
+        // Chrome client hints (basic). Google in particular checks
+        // Sec-CH-UA to decide whether to ship the rich search page or
+        // the legacy HTML fallback. Without these Google answers with a
+        // bare "you need JS" page even to a real Chrome UA on a non-EU
+        // IP.
         reqHeaders = curl_slist_append(reqHeaders,
             "Sec-CH-UA: \"Google Chrome\";v=\"120\", "
             "\"Chromium\";v=\"120\", \"Not?A_Brand\";v=\"24\"");
@@ -171,6 +219,42 @@ FetchResult fetchUrl(const std::string& url, long timeoutSec) {
             "Sec-CH-UA-Mobile: ?0");
         reqHeaders = curl_slist_append(reqHeaders,
             "Sec-CH-UA-Platform: \"Linux\"");
+        // v2.9: full Chrome client-hints bundle. Chrome 120 sends these
+        // on every navigation; missing them is a clear bot signal.
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-Full-Version-List: \"Google Chrome\";v=\"120.0.6099.109\", "
+            "\"Chromium\";v=\"120.0.6099.109\", "
+            "\"Not?A_Brand\";v=\"24.0.0.0\"");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-Full-Version: \"120.0.6099.109\"");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-Arch: \"x86\"");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-Bitness: \"64\"");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-Model: \"\"");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-Platform-Version: \"6.5.0\"");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-Form-Factors: \"Desktop\"");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-UA-WoW64: ?0");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-DPR: 1");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-Viewport-Width: 1024");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Sec-CH-Width: 1024");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Device-Memory: 8");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "X-Client-Data: CIm2yQEIpt3JAULckK8FBLjTzAEIzufA");
+        reqHeaders = curl_slist_append(reqHeaders,
+            "Priority: u=0, i");
+        // v2.9: suppress the Expect: 100-continue header that libcurl
+        // adds by default. Real Chrome never sends it on GETs; its
+        // presence is a small but real bot signal.
+        reqHeaders = curl_slist_append(reqHeaders, "Expect:");
         // Sec-Fetch-* marks this as a top-level document navigation typed
         // in by the user (Sec-Fetch-Site: none + Sec-Fetch-User: ?1). Sites
         // relax anti-CSRF / bot walls for this combination.
@@ -178,10 +262,24 @@ FetchResult fetchUrl(const std::string& url, long timeoutSec) {
             "Sec-Fetch-Dest: document");
         reqHeaders = curl_slist_append(reqHeaders,
             "Sec-Fetch-Mode: navigate");
-        reqHeaders = curl_slist_append(reqHeaders,
-            "Sec-Fetch-Site: none");
+        // v2.9: when the caller set a Referer (in-site navigation),
+        // send it. Otherwise Sec-Fetch-Site: none matches a top-level
+        // typed URL (Chrome doesn't send Referer for those either).
+        if (!g_referer.empty()) {
+            reqHeaders = curl_slist_append(reqHeaders,
+                ("Referer: " + g_referer).c_str());
+            reqHeaders = curl_slist_append(reqHeaders,
+                "Sec-Fetch-Site: same-origin");
+        } else {
+            reqHeaders = curl_slist_append(reqHeaders,
+                "Sec-Fetch-Site: none");
+        }
         reqHeaders = curl_slist_append(reqHeaders,
             "Sec-Fetch-User: ?1");
+        // YouTube consent cookies are set on the FIRST visit only;
+        // after that the cookie jar at $HOME/.cache/minibrowser/
+        // cookies.txt carries them. We still set them here as a
+        // fallback for the very first visit (the jar is empty then).
         if (isYouTubeHost(url))
             reqHeaders = curl_slist_append(reqHeaders,
                 "Cookie: SOCS=CAI; "
@@ -208,6 +306,33 @@ FetchResult fetchUrl(const std::string& url, long timeoutSec) {
         if (rc != CURLE_OK) {
             res.error = curl_easy_strerror(rc);
             return res;
+        }
+        // v2.9: persist the in-memory cookie engine to the on-disk jar
+        // ourselves. The libcurl way (CURLOPT_COOKIEJAR + curl_easy_cleanup)
+        // does NOT work for us because we reuse the per-thread handle
+        // across requests and never call curl_easy_cleanup — so the jar
+        // never gets written. The "FLUSHALL" command word is also a
+        // no-op on its own (it just clears the "new cookies" flag).
+        // The actual fix: extract the cookies via CURLINFO_COOKIELIST
+        // (each entry comes back in Netscape cookie file format
+        // already) and write them to the jar file ourselves.
+        {
+            curl_slist* cookies = nullptr;
+            CURLcode infoRc = curl_easy_getinfo(curl, CURLINFO_COOKIELIST, &cookies);
+            if (infoRc == CURLE_OK && cookies) {
+                std::string jarPath = cookieJarPath();
+                FILE* f = std::fopen(jarPath.c_str(), "w");
+                if (f) {
+                    std::fprintf(f, "# Netscape HTTP Cookie File\n");
+                    std::fprintf(f, "# https://curl.se/docs/http-cookies.html\n");
+                    std::fprintf(f, "# v2.9 cookie jar — written by MiniBrowser\n\n");
+                    for (curl_slist* p = cookies; p; p = p->next) {
+                        if (p->data) std::fprintf(f, "%s\n", p->data);
+                    }
+                    std::fclose(f);
+                }
+                curl_slist_free_all(cookies);
+            }
         }
     }
 

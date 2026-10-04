@@ -19,7 +19,21 @@ struct FetchResult {
 //   - transparent gzip/deflate/brotli decompression (Accept-Encoding)
 //   - follows up to 10 redirects
 //   - configurable timeout, default 25s (connect timeout 10s)
+//   - v2.9: HTTP/2 (CURL_HTTP_VERSION_2_0), persistent cookie jar at
+//     $HOME/.cache/minibrowser/cookies.txt, full Chrome 120 client-hints
+//     bundle (Sec-CH-UA-Full-Version-List / Arch / Bitness / Model /
+//     Platform-Version / Form-Factors / WoW64 / DPR / Viewport-Width /
+//     Width / Device-Memory / X-Client-Data / Priority), Expect header
+//     suppression, Referer set via setReferer().
 FetchResult fetchUrl(const std::string& url, long timeoutSec = 25);
+
+// v2.9: set the Referer header for the next fetchUrl() call. Chrome
+// sends Referer on every in-site navigation; passing the URL of the
+// page the user is currently on (and clearing it again for top-level
+// typed URLs) makes the request look like a real Chrome navigation.
+// Pass an empty string to clear (top-level typed URL = no Referer,
+// which matches Chrome's behaviour).
+void setReferer(const std::string& url);
 
 // Same as fetchUrl but backed by a per-session memory cache so a page's
 // stylesheets/scripts/images aren't re-downloaded for every reference.
