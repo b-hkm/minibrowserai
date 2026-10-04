@@ -47,6 +47,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include <iostream>
 #include <curl/curl.h>
 
 #endif // MB_HAVE_FFMPEG
@@ -405,6 +406,12 @@ void MediaPlayer::decodeLoop_() {
     }
 
     // ---- audio device -----------------------------------------------------
+    // v2.11: open the audio device with SDL_AUDIO_ALLOW_FREQUENCY_CHANGE
+    // | SDL_AUDIO_ALLOW_SAMPLES_CHANGE so the system can negotiate the
+    // closest supported format instead of failing outright when 48kHz
+    // S16 stereo with 2048-sample buffers isn't exactly supported. The
+    // swr (set up after the first audio frame is decoded) resamples from
+    // the source's actual rate to whatever the device settled on.
     if (hasAudio_ && ensureAudioSubsys()) {
         SDL_AudioSpec want{}, have{};
         want.freq = 48000;
@@ -413,22 +420,25 @@ void MediaPlayer::decodeLoop_() {
         want.samples = 2048;
         want.callback = audioCallbackC;
         want.userdata = this;
-        audioDev_ = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+        audioDev_ = SDL_OpenAudioDevice(
+            nullptr, 0, &want, &have,
+            SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
         if (audioDev_) {
             audioRate_ = have.freq;
             SDL_PauseAudioDevice(audioDev_, 1);   // start paused
         }
     }
 
-    // swr for audio -> stereo s16 at the device rate.
-    if (hasAudio_) {
-        AVChannelLayout outCh = AV_CHANNEL_LAYOUT_STEREO;
-        swr_alloc_set_opts2(&swr_, &outCh, AV_SAMPLE_FMT_S16,
-                            audioRate_ > 0 ? audioRate_ : 48000,
-                            &actx_->ch_layout, actx_->sample_fmt,
-                            actx_->sample_rate, 0, nullptr);
-        if (swr_ && swr_init(swr_) < 0) { swr_free(&swr_); swr_ = nullptr; }
-    }
+    // v2.11: swr is set up LAZILY in decodeAudioPacket_ on the first
+    // audio frame, using the frame's actual ch_layout/sample_fmt/
+    // sample_rate (which FFmpeg only fully populates after the first
+    // avcodec_receive_frame). Setting it up here from actx_->* would
+    // use incomplete/unset values for some codecs — e.g. AAC streams
+    // where ch_layout is {0} until first decode — which caused swr to
+    // silently produce garbage (the "buzz sound, not the actual
+    // content" symptom). We still pre-allocate swr_ as nullptr so the
+    // guard `if (!swr_) { drop; continue; }` in decodeAudioPacket_
+    // drops packets until the first frame initializes it correctly.
 
     state_ = State::Ok;
     resetClock_(0.0);
@@ -572,9 +582,51 @@ void MediaPlayer::decodeAudioPacket_(AVCodecContext* ctx, AVPacket* pkt) {
     if (avcodec_send_packet(ctx, pkt) < 0) return;
     AVFrame* frm = av_frame_alloc();
     while (avcodec_receive_frame(ctx, frm) >= 0) {
-        if (!swr_) { av_frame_unref(frm); continue; }
+        // v2.11: lazily initialize swr on the first audio frame. The
+        // codec context's ch_layout / sample_fmt / sample_rate can be
+        // incomplete before the first frame is decoded (notably for
+        // AAC streams where ch_layout is {0}); using the frame's
+        // actual values guarantees the converter matches the real
+        // decoded audio. The original code set swr up at open() time
+        // from actx_->*, which caused swr to silently emit garbage
+        // (the "buzz sound, not the actual content of the video"
+        // symptom).
+        if (!swr_) {
+            int outRate = audioRate_ > 0 ? audioRate_ : 48000;
+            AVChannelLayout outCh = AV_CHANNEL_LAYOUT_STEREO;
+            // Use frm->ch_layout / frm->format / frm->sample_rate —
+            // these are the actual decoded values, populated by the
+            // decoder on the first receive_frame.
+            int inRate = frm->sample_rate > 0 ? frm->sample_rate
+                                                : ctx->sample_rate;
+            AVSampleFormat inFmt = frm->format != AV_SAMPLE_FMT_NONE
+                ? (AVSampleFormat)frm->format
+                : ctx->sample_fmt;
+            const AVChannelLayout* inCh = (frm->ch_layout.order != AV_CHANNEL_ORDER_UNSPEC && frm->ch_layout.nb_channels > 0)
+                ? &frm->ch_layout
+                : &ctx->ch_layout;
+            int rc = swr_alloc_set_opts2(&swr_, &outCh,
+                AV_SAMPLE_FMT_S16, outRate, inCh, inFmt, inRate, 0, nullptr);
+            if (rc == 0 && swr_ && swr_init(swr_) >= 0) {
+                std::cerr << "[audio] swr initialized: in="
+                          << inRate << "Hz " << av_get_sample_fmt_name(inFmt)
+                          << " " << (inCh->nb_channels) << "ch"
+                          << " -> out=" << outRate << "Hz S16 stereo\n";
+            } else {
+                std::cerr << "[audio] swr init FAILED (in="
+                          << inRate << "Hz " << av_get_sample_fmt_name(inFmt)
+                          << ", rc=" << rc << ") — audio will be silent\n";
+                swr_free(&swr_);
+                swr_ = nullptr;
+                av_frame_unref(frm);
+                continue;
+            }
+        }
         int outRate = audioRate_ > 0 ? audioRate_ : 48000;
-        int outMax = (int)((int64_t)frm->nb_samples * outRate / actx_->sample_rate) + 64;
+        int inRate = frm->sample_rate > 0 ? frm->sample_rate
+                                          : ctx->sample_rate;
+        if (inRate <= 0) { av_frame_unref(frm); continue; }
+        int outMax = (int)((int64_t)frm->nb_samples * outRate / inRate) + 64;
         std::vector<uint8_t> out((size_t)outMax * 2 * 2);   // stereo * s16
         uint8_t* outPtr = out.data();
         int got = swr_convert(swr_, &outPtr, outMax,

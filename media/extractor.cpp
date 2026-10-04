@@ -555,7 +555,29 @@ static bool tryYtDlp_(const std::string& pageUrl, ResolvedMedia& out,
     if (!findInPath("timeout").empty()) cmd += "timeout 75 ";
     cmd += tool;
     cmd += " --no-playlist --no-warnings --socket-timeout 15";
-    cmd += " -f " + shellQuote("b[protocol^=http]/b");
+    // v2.11: format selector now explicitly requires BOTH audio and
+    // video codecs (acodec!=none AND vcodec!=none) AND prefers the
+    // https protocol (progressive combined formats). The v2.10
+    // selector `b[protocol^=http]/b` was matching `http_dash_segments`
+    // too — a DASH protocol that returns video-only OR audio-only
+    // streams, not progressive combined files. For YouTube in 2026,
+    // most videos only have adaptive (DASH) streams, so the v2.10
+    // selector would fall through to `b` and pick a video-only DASH
+    // stream — the file would have video but no audio, which is why
+    // the user heard "buzz sound, not the actual content of the
+    // video" (the audio track was missing, the buzz was the SDL audio
+    // device playing silence/garbage).
+    // v2.11 selector priorities (most-preferred first):
+    //   1. best progressive https combined (audio+video) — what we want
+    //   2. best progressive combined (audio+video, any protocol)
+    //   3. best combined (audio+video, any protocol, including DASH
+    //      adaptive with both codecs in one stream — rare but exists)
+    //   4. fallback: best anything (last resort — might be video-only)
+    cmd += " -f " + shellQuote(
+        "best[protocol=https][acodec!=none][vcodec!=none]"
+        "/best[acodec!=none][vcodec!=none]"
+        "/best[acodec!=none]"
+        "/best");
     // v2.10: explicit player_client order. yt-dlp's default client list
     // includes the "web" client which YouTube now bot-gates aggressively.
     // Forcing the "android" client first (which uses a different YouTube

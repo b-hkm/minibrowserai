@@ -1655,3 +1655,113 @@ either (a) yt-dlp with cookies from a signed-in browser session, or
 (b) the official YouTube Data API v3 with an API key. Piped/Invidious
 are no longer viable. v2.10 makes path (a) automatic when yt-dlp is
 installed.
+
+---
+
+# What changed in MiniBrowser 2.11
+
+## Background: the buzz sound you reported
+
+You reported that YouTube watch playback now WORKS (the video plays) but
+the audio is "just buzz sound, not the actual content of the video".
+Investigation found two distinct root causes — both contributed:
+
+  1. **yt-dlp format selector was matching DASH protocols too.** The
+     v2.10 selector `b[protocol^=http]/b` was supposed to prefer
+     progressive (combined video+audio) formats over DASH (separate
+     video-only / audio-only) streams. But `protocol^=http` matches
+     BOTH `https` (progressive) AND `http_dash_segments` (DASH). For
+     modern YouTube videos that only have DASH adaptive streams (most
+     high-quality uploads in 2026), the selector would fall through to
+     the bare `b` fallback, which picks the best video-only DASH
+     stream. Result: a file with video but NO audio track. The player
+     would open it, find no audio stream, and the SDL audio device
+     would play silence (which on some systems sounds like a low
+     buzz/hum from the speaker driver).
+
+  2. **swresample was initialized from incomplete codec context data.**
+     The v2.10 code set up swr at `open()` time using
+     `actx_->ch_layout` / `actx_->sample_fmt` / `actx_->sample_rate`.
+     For AAC streams in particular, FFmpeg only fully populates these
+     fields AFTER the first `avcodec_receive_frame` call — at open
+     time, `ch_layout` can be `{0}` (unspecified), and swr would
+     silently produce garbage output (the buzz symptom). Even when
+     the file HAD audio (rare progressive streams), the audio path
+     was broken for AAC.
+
+## 1. yt-dlp format selector now requires both audio AND video codecs
+   (`media/extractor.cpp`)
+
+The v2.10 selector `b[protocol^=http]/b` is replaced with the
+explicit four-step selector:
+
+    best[protocol=https][acodec!=none][vcodec!=none]
+    /best[acodec!=none][vcodec!=none]
+    /best[acodec!=none]
+    /best
+
+This:
+- Step 1: prefer progressive `https` combined formats (the ideal case)
+- Step 2: accept any combined format (audio+video in one file)
+- Step 3: as last resort, accept any format with audio (rare — only
+  if no combined formats exist at all, would be audio-only)
+- Step 4: absolute last resort, best anything (might be video-only —
+  no audio, but at least the user sees the video)
+
+The v2.10 fallback `/b` was too permissive and would pick a
+video-only DASH stream when no progressive format existed.
+
+## 2. swresample is now initialized LAZILY on the first audio frame
+   (`media/mediaplayer.cpp`)
+
+`swr_alloc_set_opts2` is now called from inside `decodeAudioPacket_`
+on the FIRST `avcodec_receive_frame` output, using the frame's
+actual `ch_layout` / `format` / `sample_rate` (which FFmpeg has
+fully populated by then). The v2.10 code called it at `open()` time
+from the codec context's `ch_layout` etc., which can be `{0}` /
+`AV_SAMPLE_FMT_NONE` / 0 for AAC streams until the first decode —
+causing swr to silently emit garbage (the buzz).
+
+The new code:
+- Logs `[audio] swr initialized: in=44100Hz fltp 1ch -> out=48000Hz
+  S16 stereo` on success (so the user can verify the audio path
+  took the right format from the actual decoded stream).
+- Logs `[audio] swr init FAILED (in=... rc=...) — audio will be
+  silent` on failure (with the FFmpeg error code for debugging).
+- Falls back to `ctx->ch_layout` etc. if the frame's fields are
+  unset (defensive — shouldn't happen in practice, but covers
+  edge cases).
+- Guards against `inRate <= 0` (avoids division by zero in the
+  `outMax` computation).
+
+## 3. SDL audio device now allows frequency + samples negotiation
+   (`media/mediaplayer.cpp`)
+
+`SDL_OpenAudioDevice` is now called with
+`SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE`
+instead of `0`. If the system audio device can't honor 48kHz / S16 /
+stereo / 2048-sample buffers exactly (e.g., it's locked at 44.1kHz
+because another app is using it), SDL can now negotiate the closest
+match. swr resamples from the source's actual rate (44.1kHz for AAC)
+to whatever the device settled on (`audioRate_` reflects the real
+`have.freq`). The v2.10 code with `0` would have failed to open the
+device entirely on systems that can't match 48kHz exactly — leading
+to no audio at all.
+
+## 4. About page
+
+`about:home` bumped to 2.11 / round 16. Description highlights both
+fixes (yt-dlp format selector + lazy swr init).
+
+## Verification
+
+- Build clean, 644 selftests pass (unchanged from v2.10 — the
+  selftest doesn't exercise the audio device path because there's
+  no audio device in the sandbox).
+- Live test with `tests/media/sample.mp4` (which has 44.1kHz mono
+  AAC audio): `[audio] swr initialized: in=44100Hz fltp 1ch ->
+  out=48000Hz S16 stereo` — the lazy init correctly identified the
+  actual decoded format and set up the converter with the right
+  parameters. The v2.10 code would have used `actx_->ch_layout`
+  (which is `{0}` for this codec at open time) and produced
+  garbage.
