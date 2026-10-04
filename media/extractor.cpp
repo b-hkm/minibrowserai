@@ -483,27 +483,63 @@ bool resolve(const std::string& pageUrl, ResolvedMedia& out,
             if (s.find(w) != std::string::npos) return true;
         return false;
     };
+    // v2.10: distinguish three failure modes:
+    //   1. Video genuinely unavailable (deleted/private/region-locked/
+    //      age-restricted). YouTube's extractor returns
+    //      ContentNotAvailableException with "unavailable" / "private" /
+    //      "removed" / "geo-block" in the message. Nothing we can do.
+    //   2. Piped got bot-flagged by YouTube (YouTube now requires sign-in
+    //      for anonymous watch access on the NewPipeExtractor client that
+    //      Piped uses — affects ALL Piped instances globally, not just
+    //      specific IPs). The error contains "SignInConfirm" /
+    //      "LOGIN_REQUIRED" / "Sign in to confirm" / "anonymous watch".
+    //      Fixable by installing yt-dlp (rotating clients, cookie support
+    //      usually bypass this).
+    //   3. yt-dlp itself got bot-flagged (same root cause, different
+    //      code path). Cookies usually bypass this.
     const bool unavailable =
         mentions(pipedErr, {"unavailable", "not exist", "private", "removed",
                             "geo-block", "ContentNotAvailable"}) ||
         mentions(ytdlpErr, {"unavailable", "not exist", "private"});
+    // Bot-gate signals. Note: must check BOTH errors because Piped's
+    // NewPipeExtractor reports its own bot-gating (yt-dlp may not be
+    // installed, in which case ytdlpErr is empty).
     const bool botGated =
-        mentions(ytdlpErr, {"Sign in to confirm", "bot", "cookies"});
+        mentions(ytdlpErr, {"Sign in to confirm", "bot", "cookies"}) ||
+        mentions(pipedErr, {"SignInConfirm", "LOGIN_REQUIRED",
+                            "Sign in to confirm", "anonymous watch access"});
 
     if (unavailable) {
-        msg = "video unavailable on YouTube (removed, private or "
-              "region-locked) — confirmed by both yt-dlp and Piped";
-    } else if (tool.empty()) {
-        msg = "yt-dlp not installed and " + pipedErr +
-              "; install yt-dlp (pip install yt-dlp) for the full extractor";
+        msg = "video unavailable on YouTube (removed, private, "
+              "age-restricted or region-locked) — confirmed by both "
+              "yt-dlp and Piped";
     } else if (botGated) {
-        msg = "YouTube is bot-gating this network and " + pipedErr +
-              ". On a home connection yt-dlp usually works; cookies also "
-              "help: MINIBROWSER_YTDLP_ARGS='--cookies-from-browser firefox'";
+        // v2.10: this is the common failure mode in 2026 — YouTube
+        // started requiring sign-in for anonymous watch access via the
+        // NewPipeExtractor client (used by ALL Piped instances). The
+        // video itself is fine; Piped just can't fetch its stream.
+        // yt-dlp with rotating clients + cookies usually bypasses.
+        if (tool.empty()) {
+            msg = "YouTube is bot-gating Piped: " + pipedErr +
+                  ". The video itself is fine — Piped's IP got "
+                  "flagged. Install yt-dlp (pip install yt-dlp) — its "
+                  "rotating clients and cookie support usually bypass "
+                  "this; or set MINIBROWSER_YTDLP_ARGS="
+                  "'--cookies-from-browser firefox' to reuse your "
+                  "browser's YouTube session";
+        } else {
+            msg = "YouTube is bot-gating: yt-dlp reports '" + ytdlpErr +
+                  "', Piped reports '" + pipedErr + "'. Cookies usually "
+                  "bypass this: MINIBROWSER_YTDLP_ARGS="
+                  "'--cookies-from-browser firefox'";
+        }
+    } else if (tool.empty()) {
+        msg = "yt-dlp not installed and Piped failed: " + pipedErr +
+              ". Install yt-dlp (pip install yt-dlp) for the full extractor";
     } else {
         msg = tool + ": " + ytdlpErr + " \xC2\xB7 " + pipedErr;
     }
-    err = msg.substr(0, 400);
+    err = msg.substr(0, 500);
     return false;
 }
 
@@ -520,10 +556,58 @@ static bool tryYtDlp_(const std::string& pageUrl, ResolvedMedia& out,
     cmd += tool;
     cmd += " --no-playlist --no-warnings --socket-timeout 15";
     cmd += " -f " + shellQuote("b[protocol^=http]/b");
+    // v2.10: explicit player_client order. yt-dlp's default client list
+    // includes the "web" client which YouTube now bot-gates aggressively.
+    // Forcing the "android" client first (which uses a different YouTube
+    // API path that's still bot-tolerant) and the "tv_embedded" client
+    // second (which is age-gate bypassable) usually gets a stream when
+    // the default fails. Only applies to yt-dlp (youtube-dl doesn't
+    // support --extractor-args).
+    if (tool == "yt-dlp") {
+        cmd += " --extractor-args " +
+               shellQuote("youtube:player_client=android,tv_embedded,web");
+    }
+    // v2.10: try to reuse the user's browser cookies by default. yt-dlp
+    // supports --cookies-from-browser firefox/chrome/brave/edge/chromium
+    // — if a known browser is installed, use it. This reuses the user's
+    // signed-in YouTube session, which bypasses YouTube's "Sign in to
+    // confirm you're not a bot" wall. The user can override via
+    // MINIBROWSER_YTDLP_ARGS= (including setting it to empty).
     // Power-user escape hatch (cookies, player clients, proxies...).
+    bool userOverride = false;
     if (const char* extra = ::getenv("MINIBROWSER_YTDLP_ARGS")) {
         std::string e = trimLine(extra);
-        if (!e.empty()) cmd += " " + e;
+        if (!e.empty()) {
+            cmd += " " + e;
+            userOverride = true;
+        }
+    }
+    if (!userOverride && tool == "yt-dlp") {
+        // Auto-detect a browser with a YouTube session. Check firefox
+        // first (most common on Linux), then chrome, then brave, then
+        // chromium. The first one with a cookies.sqlite in the standard
+        // location wins.
+        const char* home = ::getenv("HOME");
+        if (home && *home) {
+            const std::string profiles[] = {
+                std::string(home) + "/.mozilla/firefox",
+                std::string(home) + "/.config/google-chrome",
+                std::string(home) + "/.config/brave",
+                std::string(home) + "/.config/chromium",
+                std::string(home) + "/.config/microsoft-edge"
+            };
+            const char* browsers[] = {"firefox", "chrome", "brave",
+                                       "chromium", "edge"};
+            for (size_t i = 0; i < sizeof(profiles)/sizeof(profiles[0]); ++i) {
+                std::string cmd2 = "test -d " + shellQuote(profiles[i]) +
+                                   " && ls " + shellQuote(profiles[i]) +
+                                   " >/dev/null 2>&1";
+                if (std::system(cmd2.c_str()) == 0) {
+                    cmd += std::string(" --cookies-from-browser ") + browsers[i];
+                    break;
+                }
+            }
+        }
     }
     if (tool == "yt-dlp") {
         // One value per line: url, title, ext.

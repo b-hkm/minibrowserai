@@ -1116,31 +1116,24 @@ static std::string aboutHomeHtml() {
     return R"HTML(<html><head><title>MiniBrowser Home</title></head>
 <body style="font-family: sans-serif">
 <div style="background: #1a4fa0; padding: 24px">
-  <h1 style="font-size: 36px; color: #ffffff">MiniBrowser 2.9</h1>
+  <h1 style="font-size: 36px; color: #ffffff">MiniBrowser 2.10</h1>
   <p style="color: #cfe0ff">A tiny SDL2 browser with real HTTP/HTTPS, a Duktape
-  JavaScript engine and CSS styling. Round 14: more like Chrome than ever.
-  v2.8 made the browser pretend to be Chrome (UA + Sec-Fetch-* + Sec-CH-UA
-  basics) and reintroduced a YouTube ytInitialData data-extractor + the real
-  server-rendered DDG html endpoint. v2.9 now sends the FULL Chrome 120
-  client-hints bundle on every navigation (Sec-CH-UA-Full-Version-List, Arch,
-  Bitness, Model, Platform-Version, Form-Factors, WoW64, DPR, Viewport-Width,
-  Width, Device-Memory, X-Client-Data, Priority) — these are the headers a
-  real Chrome 120 sends that v2.8 was missing, and sites like Google check
-  for their presence more than their content. Plus three more
-  Chrome-matching features: <b>HTTP/2</b> (Chrome uses h2 by default; some
-  sites treat HTTP/1.1 as a bot signal), <b>cookie jar persistence</b>
-  ($HOME/.cache/minibrowser/cookies.txt — YouTube's VISITOR_INFO1_LIVE /
-  __Secure-YNID session cookies now stick across requests AND across
-  process restarts, exactly like a real Chrome session), and <b>Referer
-  header tracking</b> (in-site navigations send Referer: &lt;previous
-  URL&gt;, just like Chrome). The Expect: 100-continue header that libcurl
-  adds by default is also suppressed (real Chrome never sends it on GETs).
-  On top of round 13's hybrid rendering, round 12's Chrome UA, round 11's
-  Piped-API fallback, round 10's yt-dlp bridge and round 9's internal
-  media stack (&lt;video&gt; and &lt;audio&gt; decode in-process), the
-  image viewer, the element-geometry API (getBoundingClientRect /
-  offset*), HTML5 implied end tags, text selection and the expanded JS
-  DOM API.</p>
+  JavaScript engine and CSS styling. Round 15: better YouTube failure
+  diagnostics + yt-dlp auto-cookie. v2.9 made the browser send the full
+  Chrome 120 client-hints bundle, HTTP/2, a persistent cookie jar, and
+  Referer tracking. v2.10 fixes the YouTube watch playback issue you
+  reported: Piped's NewPipeExtractor is now globally bot-flagged by
+  YouTube (the error was "SignInConfirmNotBotException: YouTube probably
+  temporarily blocked anonymous watch access with this IP" — affects ALL
+  Piped instances, not just specific IPs). v2.10 now (a) distinguishes
+  that error from "video genuinely unavailable" in the failure message
+  and (b) auto-passes <code>--cookies-from-browser firefox</code> /
+  chrome / brave to yt-dlp when a browser profile is detected, plus
+  <code>--extractor-args youtube:player_client=android,tv_embedded,web</code>
+  to force the bot-tolerant Android client first. <b>Install yt-dlp</b>
+  (<code>pip install yt-dlp</code>) — it's the reliable path for YouTube
+  playback in 2026; Piped is now only a fallback for videos that yt-dlp
+  can't reach.</p>
 </div>
 <h2>Try it out</h2>
 <ul>

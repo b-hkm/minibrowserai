@@ -1545,3 +1545,113 @@ margins of bot detection.
   from datacenter IPs — confirming the block is IP-level, not
   TLS-fingerprint-level. From residential IPs the v2.8 code already
   works for search; v2.9's improvements help at the margins.
+
+---
+
+# What changed in MiniBrowser 2.10
+
+## Background: the YouTube watch playback issue you reported
+
+You reported that "Never Gonna Give You Up" (`dQw4w9WgXcQ`) plays fine,
+but other videos show "Video playback failed: video unavailable on
+YouTube (removed, private or region-locked) — confirmed by both yt-dlp
+and Piped". Investigation with the actual video IDs from your
+screenshots revealed two distinct failure modes that v2.9 was
+conflating into one misleading "unavailable" message:
+
+  1. **Genuinely unavailable videos** (e.g. `s35dFYtR0B4`,
+     `s3SdFYTRoB4` — IDs that don't exist on YouTube anymore).
+     YouTube's oembed returns 404; Piped returns
+     `ContentNotAvailableException: This video is unavailable`. The
+     browser's existing "video unavailable" message was correct.
+
+  2. **Piped-bot-flagged videos** (e.g. `7FwDP17XPlk` — a "Rick Astley
+     - Never Gonna Give You Up" re-upload by "Amazing Lyrics"). The
+     video IS available (oembed returns 200 with full metadata), but
+     Piped returns `SignInConfirmNotBotException: YouTube probably
+     temporarily blocked anonymous watch access with this IP, got error
+     LOGIN_REQUIRED: "Sign in to confirm you're not a bot"`. This
+     affects ALL Piped instances globally (verified: tested 17 public
+     instances — only `pipedapi.ducks.party` and
+     `api.piped.private.coffee` are reachable, both return the same
+     `SignInConfirmNotBotException`). YouTube started requiring sign-in
+     for anonymous watch access on the NewPipeExtractor client that
+     Piped uses. Piped is now effectively dead for YouTube watch URLs
+     in 2026 — the bot block is at the YouTube-API level, not the
+     Piped-instance-IP level.
+
+v2.9's `unavailable` check matched the first error pattern only, so
+the second failure mode was incorrectly bucketed as "yt-dlp not
+installed" or "Piped failed" — but never as the bot-gate it actually
+is. v2.10 fixes the diagnostics and adds the two workarounds that
+actually unblock playback.
+
+## 1. Distinguish "video unavailable" from "Piped got bot-flagged"
+   (`media/extractor.cpp`)
+
+The error composition now checks BOTH `ytdlpErr` AND `pipedErr` for
+bot-gate signals (was only checking `ytdlpErr`, which is empty when
+yt-dlp isn't installed). Bot-gate signals matched:
+`SignInConfirm`, `LOGIN_REQUIRED`, `Sign in to confirm`,
+`anonymous watch access`. When detected, the failure message now
+reads:
+
+> YouTube is bot-gating Piped: <full Piped error>. The video itself
+> is fine — Piped's IP got flagged. Install yt-dlp (pip install
+> yt-dlp) — its rotating clients and cookie support usually bypass
+> this; or set MINIBROWSER_YTDLP_ARGS='--cookies-from-browser firefox'
+> to reuse your browser's YouTube session
+
+The `unavailable` message is preserved (and clarified to include
+"age-restricted" — age-restricted videos report `unavailable` via
+Piped but are technically available to signed-in users).
+
+## 2. yt-dlp auto-passes `--cookies-from-browser` + Android client
+   (`media/extractor.cpp`)
+
+When yt-dlp is installed, the bridge now adds:
+
+  - `--extractor-args youtube:player_client=android,tv_embedded,web`
+    — forces the bot-tolerant Android client first (uses a different
+    YouTube API path that's still bot-tolerant), then the
+    age-gate-bypassable `tv_embedded` client, then the default `web`
+    client as last resort.
+  - `--cookies-from-browser firefox` (or `chrome` / `brave` / `chromium`
+    / `edge`) — auto-detected by checking `$HOME/.mozilla/firefox`,
+    `$HOME/.config/google-chrome`, etc. Reuses the user's signed-in
+    YouTube session, which bypasses YouTube's "Sign in to confirm
+    you're not a bot" wall entirely.
+
+The user can still override via `MINIBROWSER_YTDLP_ARGS=...` (including
+setting it to empty to disable the auto-detection).
+
+## 3. About page
+
+`about:home` bumped to 2.10 / round 15. The description now
+explicitly recommends installing yt-dlp as the reliable YouTube
+playback path in 2026, with Piped as a fallback only for videos that
+yt-dlp can't reach.
+
+## What's NOT here
+
+I considered but didn't add:
+- **More Piped instances** to the host list — tested 17 public
+  instances, only 2 are reachable (`pipedapi.ducks.party` and
+  `api.piped.private.coffee`), and BOTH return the same
+  `SignInConfirmNotBotException`. Adding more wouldn't help — the bot
+  block is at the YouTube-API level, not the instance-IP level.
+- **Invidious as a third fallback** — only 1 of 11 public Invidious
+  instances has the API enabled (`invidious.f5.si`), and it returns an
+  HTML error page ("Oh noes!") instead of JSON. Invidious is also
+  effectively dead for stream extraction in 2026.
+- **libcurl-impersonate integration** — the library still segfaults
+  on every `curl_easy_impersonate()` call when linked into our
+  binary. And even if it worked, it doesn't help — the bot block is
+  at the YouTube-API level (requiring sign-in for the NewPipeExtractor
+  client), not the TLS-fingerprint level.
+
+The realistic conclusion: in 2026, YouTube watch playback requires
+either (a) yt-dlp with cookies from a signed-in browser session, or
+(b) the official YouTube Data API v3 with an API key. Piped/Invidious
+are no longer viable. v2.10 makes path (a) automatic when yt-dlp is
+installed.
