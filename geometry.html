@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>getBoundingClientRect demo</title>
+<style>
+  /* body margin must stay 0: absolute overlays are positioned relative
+     to the body content box by this engine, so body must start at the
+     document origin for outlines to line up with measured rects. */
+  body { font-family: sans-serif; margin: 0; }
+  #wrap { padding: 16px; }
+  h1 { font-size: 24px; }
+  #stage { background: #f4f6f8; padding: 10px; border: 1px solid #c0c8d0; }
+  #stage p { margin: 6px 0; }
+  .meas { border: 1px dashed #8899aa; padding: 1px 2px; }
+  pre { background: #102030; color: #cfe8cf; padding: 10px; font-family: monospace; }
+</style>
+</head>
+<body>
+<div id="wrap">
+<h1>getBoundingClientRect() demo — MiniBrowser 2.3</h1>
+<p>Page JS measures elements with <b>getBoundingClientRect()</b> and
+<b>offsetWidth</b>, then draws a colored outline at exactly the reported
+coordinates. If the geometry API is correct, every outline hugs its
+target.</p>
+
+<div id="stage">
+  <p id="para">This paragraph is a block element. Inside it,
+  <b id="bold">this bold fragment</b> is an inline element with no box of
+  its own, and <a id="lnk" href="#stage">this link</a> is measured from
+  its per-line link fragments.</p>
+  <p>A second paragraph, <span class="meas" id="span1">measured
+  too</span>, so stacked rects are visible.</p>
+</div>
+
+<pre id="out">measuring...</pre>
+
+<script>
+(function () {
+  var targets = [
+    ["para", "#e04000", "rgba(224,64,0,0.10)"],
+    ["bold", "#1060c0", "rgba(16,96,192,0.15)"],
+    ["lnk",  "#108a10", "rgba(16,138,16,0.15)"],
+    ["span1","#9020a0", "rgba(144,32,160,0.15)"]
+  ];
+  var lines = [];
+  for (var k = 0; k < targets.length; k++) {
+    var el = document.getElementById(targets[k][0]);
+    var r = el.getBoundingClientRect();
+    var ov = document.createElement("div");
+    // Overlays are body children: this engine positions absolute boxes
+    // relative to the parent (document top at scroll 0 == client top).
+    ov.style.position = "absolute";
+    ov.style.left = Math.round(r.x) + "px";
+    ov.style.top  = Math.round(r.y) + "px";
+    ov.style.width  = Math.max(0, Math.round(r.width) - 4) + "px";
+    ov.style.height = Math.max(0, Math.round(r.height) - 4) + "px";
+    ov.style.border = "2px solid " + targets[k][1];
+    ov.style.background = targets[k][2];
+    document.body.appendChild(ov);
+    lines.push(targets[k][0] + ": x=" + Math.round(r.x) + " y=" + Math.round(r.y) +
+      " w=" + Math.round(r.width) + " h=" + Math.round(r.height) +
+      " | offsetW=" + el.offsetWidth + " offsetH=" + el.offsetHeight);
+  }
+  // The bold fragment must sit strictly inside its paragraph.
+  var p = document.getElementById("para").getBoundingClientRect();
+  var b = document.getElementById("bold").getBoundingClientRect();
+  lines.push("");
+  lines.push("bold inside para: " +
+    (b.x >= p.x && b.right <= p.right && b.y >= p.y && b.bottom <= p.bottom
+      ? "PASS" : "FAIL"));
+  document.getElementById("out").textContent = lines.join("\n");
+})();
+</script>
+</div>
+</body>
+</html>

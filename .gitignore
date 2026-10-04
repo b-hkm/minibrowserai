@@ -1,0 +1,21 @@
+# Build artifacts (do not commit)
+*.o
+*.d
+browser
+*.bmp
+*.png
+*.exe
+*.app
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local sysroot (dev-only)
+sysroot/
+
+# Logs
+*.log

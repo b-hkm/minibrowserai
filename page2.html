@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Page 2 — About</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    h1 { color: #a04020; }
+    .meta { color: #888; font-size: 14; }
+  </style>
+</head>
+<body>
+  <h1>Page 2 — About</h1>
+  <p class="meta">A second page to demonstrate navigation.</p>
+
+  <p>You navigated here by clicking a link. Press <b>Alt+Left</b> in the
+     browser window to go back to the previous page. Press <b>Alt+Right</b>
+     to come forward again. Press <b>F5</b> to reload the current page.</p>
+
+  <h2>Where am I?</h2>
+  <p>The address bar at the top of the browser window shows the absolute
+     path of the file currently displayed. It should now end with
+     <code>page2.html</code>.</p>
+
+  <h2>Compound selectors</h2>
+  <p>This page links the same <code>style.css</code> as the home page.
+     The rule <code>h2 + p</code> (adjacent-sibling combinator) applies
+     an italic gray style to the paragraph directly after every H2.
+     Check: this paragraph should be italic gray, and the paragraph
+     above (which is also right after an H2) should be too.</p>
+
+  <h2>Go back</h2>
+  <p><a href="test.html">Return to the home page</a></p>
+  <p><a href="test.html#section">With a fragment (won't scroll yet)</a></p>
+</body>
+</html>

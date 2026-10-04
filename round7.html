@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Round 7 Feature Tour</title>
+<style>
+body { font-family: sans-serif; }
+h1 { color: #1a4fa0; }
+.item { background: #eef; padding: 6px; }
+.ok { color: #0a0; }
+</style>
+</head>
+<body>
+<h1>Round 7 checks</h1>
+<!-- implied end tags: no closing li/p/td -->
+<ul>
+  <li>first item
+  <li>second item
+  <li>third item
+</ul>
+<p>paragraph one
+<p>paragraph two
+<table border="1">
+  <tr><td>r1c1<td>r1c2
+  <tr><td>r2c1<td>r2c2
+</table>
+<p id="jsout">JS pending...</p>
+<script>
+  // classList + encodeURIComponent + btoa + navigator + localStorage
+  var out = document.getElementById('jsout');
+  out.classList.add('ok');
+  out.textContent = 'UA: ' + navigator.userAgent.substr(0, 30) + ' | b64: '
+    + btoa('hi') + ' | uri: ' + encodeURIComponent('a b');
+  localStorage.setItem('visit', '1');
+</script>
+</body>
+</html>

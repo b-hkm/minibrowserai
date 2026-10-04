@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>MiniBrowser Media Demo</title>
+<style>
+body { font-family: sans-serif; margin: 16px; background: #fafafa; }
+h1 { font-size: 26px; }
+h2 { font-size: 19px; margin-bottom: 4px; }
+.card { background: #ffffff; border: 1px solid #ddd; padding: 12px; margin: 12px 0; }
+.hint { color: #666; font-size: 13px; }
+img.thumb { width: 150px; border: 2px solid #1a4fa0; }
+</style>
+</head>
+<body>
+<h1>Internal media player demo</h1>
+<p class="hint">Round 9: video and audio decode inside the browser (FFmpeg
++ SDL) — no external mpv window. Everything below plays in-page, like
+Firefox and Chrome.</p>
+
+<div class="card">
+<h2>Video &mdash; controls + autoplay + loop</h2>
+<video src="tests/media/sample.mp4" controls autoplay muted loop
+       width="480" height="270" poster="tests/media/poster.png"></video>
+<p class="hint">Click the stage to play/pause, drag the red seek bar to
+scrub, mute/volume on the right. Poster shows until the first frame
+arrives.</p>
+</div>
+
+<div class="card">
+<h2>Video &mdash; no controls (click to toggle)</h2>
+<video src="tests/media/sample.mp4" width="240" height="135"></video>
+<p class="hint">Without the controls attribute, clicking the video itself
+toggles playback. JS works too: <code>document.getElementById('v2').play()</code>.</p>
+</div>
+
+<div class="card">
+<h2>Audio element</h2>
+<audio src="tests/media/tone.mp3" controls></audio>
+<p class="hint">A 5-second two-tone sine. The audio element renders as the
+control bar itself.</p>
+</div>
+
+<div class="card">
+<h2>Image viewer</h2>
+<img class="thumb" src="tests/media/poster.png" alt="poster">
+<img class="thumb" src="tests/media/poster.png" alt="poster2">
+<p class="hint">Click a plain image (not wrapped in a link) to open the
+lightbox viewer: scroll = zoom, drag = pan, +/−/0 keys, Esc or the ×
+closes. Images inside links still navigate.</p>
+<p><a href="https://example.com"><img class="thumb"
+src="tests/media/poster.png" alt="linked"></a></p>
+<p class="hint">The one above is inside a link, so clicking it navigates
+instead of zooming.</p>
+</div>
+
+<div class="card">
+<h2>JS control</h2>
+<button onclick="var v=document.getElementById('v2'); v.paused ? v.play() : v.pause(); this.textContent = v.paused ? 'Play v2' : 'Pause v2';">Play v2</button>
+<span id="stat" class="hint"></span>
+<script>
+setTimeout(function () {
+  var v = document.getElementById('v2');
+  if (!v) return;
+  var s = document.getElementById('stat');
+  if (s) s.textContent = 'v2 paused=' + v.paused + ' duration=' +
+                         (v.duration ? v.duration.toFixed(1) : '?') + 's';
+}, 600);
+</script>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,76 @@
+/* External stylesheet for the browser demo.
+ * Loaded via <link rel="stylesheet" href="style.css"> in test.html.
+ */
+
+body {
+  background: #fafafa;
+  margin: 8px;
+  font-family: sans-serif;
+}
+
+h2 {
+  color: #444;
+  margin: 12px 0 6px 0;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 3px;
+}
+
+p { margin: 6px 0; }
+
+code {
+  font-family: monospace;
+  background: #eee;
+  padding: 1px 4px;
+}
+
+pre {
+  font-family: monospace;
+  background: #f0f0f0;
+  padding: 8px;
+  border: 1px solid #ccc;
+}
+
+/* Compound selector: links inside a .card are slightly darker. */
+.card a {
+  color: #0a3060;
+}
+
+/* Adjacent sibling: a paragraph immediately after an h2 is italicized. */
+h2 + p {
+  font-style: italic;
+  color: #666;
+}
+
+/* A box with a visible border and a non-white background. */
+.card {
+  background: white;
+  border: 2px solid #1a4fa0;
+  padding: 10px;
+  margin: 10px 0;
+  cursor: pointer;
+}
+
+/* Tables: thin borders on every cell. */
+td, th {
+  border: 1px solid #888;
+  padding: 4px 8px;
+}
+
+th {
+  background: #f0f0f4;
+  font-weight: bold;
+}
+
+/* A left-border accent on .alert. */
+.alert {
+  background: #fff3cd;
+  border-left: 4px solid #ffc107;
+  padding: 8px;
+  margin: 10px 0;
+}
+
+/* Make .card h2 sit nicely inside the card. */
+.card h2 {
+  border-bottom: 1px solid #1a4fa0;
+  color: #1a4fa0;
+}

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>My Browser — Home</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    h1 {
+      color: #1a4fa0;
+      border-bottom: 2px solid #1a4fa0;
+      padding-bottom: 6px;
+    }
+    .lead { font-style: italic; color: #555; }
+    nav a {
+      color: #1a4fa0;
+      margin-right: 12px;
+      text-decoration: underline;
+    }
+    nav a:hover {
+      color: #c0392b;
+      background: #ffeaa7;
+    }
+    .card p {
+      color: #222;
+      margin: 4px 0;
+    }
+    .card:hover {
+      background: #f0f8ff;
+      border-color: #555;
+    }
+    #status {
+      color: green;
+      font-weight: bold;
+    }
+    .hidden { display: none; }
+    .centered { text-align: center; }
+    .right { text-align: right; }
+    .big { font-size: 22; }
+    .fixed-box {
+      width: 240;
+      height: 80;
+      background: #f5f5f5;
+      border: 1px solid #888;
+      padding: 6px;
+    }
+    .btn {
+      background: #1a4fa0;
+      color: white;
+      border: 1px solid #143c7d;
+      padding: 4px 12px;
+    }
+    .btn:hover {
+      background: #143c7d;
+    }
+  </style>
+</head>
+<body>
+  <h1>My Browser</h1>
+  <p class="lead">A tiny HTML browser in C++/SDL. Click links to navigate,
+     use Alt+Left / Alt+Right for back/forward, F5 to reload, Ctrl+F to
+     find in page, Ctrl+= / Ctrl+- to zoom, Ctrl+L to focus the address bar,
+     Tab to cycle focus between inputs/links/buttons.</p>
+
+  <nav>
+    <a href="page2.html">About</a>
+    <a href="page2.html#section">Page 2</a>
+    <a href="missing.html">Missing page</a>
+  </nav>
+
+  <h2>New in 2.0</h2>
+  <ul>
+    <li><b>HTTP/HTTPS:</b> type any URL in the address bar (Ctrl+L), e.g.
+        <a href="https://example.com">example.com</a> — pages, stylesheets,
+        scripts and images are fetched with libcurl (gzip + redirects +
+        TLS included).</li>
+    <li><b>Real JavaScript (Duktape):</b> closures, functions with
+        arguments and return values, loops, arrays, JSON — see below.</li>
+    <li><b>Synchronous fetch() / XMLHttpRequest</b> for remote pages.</li>
+    <li><b>CSS upgrades:</b> rgba() colors, #abc hex shorthand, font-size
+        in em/%/pt, line-height, text-transform, background-image url().</li>
+    <li><b>Bookmarks</b> (Ctrl+D, bar with Ctrl+B), <b>view source</b>
+        (Ctrl+U), <b>save page</b> (Ctrl+S), <b>fullscreen</b> (F11),
+        drag &amp; drop an .html file onto the window to open it.</li>
+    <li><b>Form GET submits</b> build real query strings; #fragment links
+        scroll to anchors; back/forward restore your scroll position.</li>
+  </ul>
+
+  <div class="card" id="jscard">
+    <h2>Live JavaScript demo</h2>
+    <p id="closure-out">waiting for JS...</p>
+    <p id="transform-out" style="text-transform: uppercase">this paragraph
+       is uppercased by the css text-transform property.</p>
+    <p id="rgba-out" style="color: rgba(200, 60, 30, 255)">This sentence is
+       rgba(200, 60, 30) colored.</p>
+  </div>
+  <script>
+    // Closures + array ops: impossible with the old line-based engine.
+    function makeAdder(base) {
+        return function (x) { return base + x; };
+    }
+    var add10 = makeAdder(10);
+    var squares = [1, 2, 3, 4].map(function (n) { return n * n; })
+                              .reduce(function (a, b) { return a + b; }, 0);
+    var person = JSON.parse('{"name": "Ada"}');
+    document.getElementById('closure-out').textContent =
+        'add10(5)=' + add10(5) + ', sum of squares=' + squares +
+        ', hello ' + person.name + '!';
+    document.getElementById('jscard').addEventListener('click', function () {
+        document.getElementById('closure-out').style.color = '#1a4fa0';
+    });
+  </script>
+
+  <h2>Preformatted text (white-space: pre)</h2>
+  <pre>  function fact(n) {
+    if (n < 2) return 1;      // the < inside JS used to break the parser!
+    return n * fact(n - 1);
+  }</pre>
+
+  <h2>Features demonstrated on this page</h2>
+  <ul>
+    <li>External CSS via <code>&lt;link rel="stylesheet"&gt;</code></li>
+    <li>Inline CSS via <code>&lt;style&gt;</code></li>
+    <li>Compound selectors like <code>nav a</code> and <code>.card p</code></li>
+    <li>CSS <code>:hover</code> — hover over the nav links or the card below</li>
+    <li>CSS <code>display: none</code>, <code>text-align: center/right</code></li>
+    <li>CSS <code>width</code> / <code>height</code> — see the fixed box below</li>
+    <li>Unordered lists with bullets, ordered lists with numbers</li>
+    <li>Tables with headers, <code>&lt;hr&gt;</code>, <code>&lt;blockquote&gt;</code></li>
+    <li><code>&lt;dl&gt;</code> / <code>&lt;dt&gt;</code> / <code>&lt;dd&gt;</code> definition lists</li>
+    <li>Long-word breaking</li>
+    <li><b>Form inputs</b> — click the text fields below, type, Tab to cycle</li>
+    <li><b>JS setTimeout</b> — see "Async demo" below</li>
+    <li><b>JS addEventListener</b> — see "Event listener demo" below</li>
+    <li>Find in page with Ctrl+F (try searching for "browser")</li>
+    <li>Page zoom with Ctrl+= / Ctrl+- / Ctrl+0</li>
+    <li>Editable address bar — click it or press Ctrl+L</li>
+  </ul>
+
+  <div class="card" id="card" onclick="document.getElementById('status').textContent = 'Card clicked!';">
+    <h2>Compound selector + onclick demo</h2>
+    <p>This paragraph is inside a <code>.card</code> div. The rule
+       <code>.card p</code> colors it dark gray. The H2 above is inside
+       the same div but isn't a <code>p</code>, so it keeps the default
+       heading color.</p>
+    <p><b>Click anywhere inside this card</b> to fire the onclick handler.
+       Also notice the <code>.card:hover</code> rule changes the background
+       and border color when you hover.</p>
+  </div>
+
+  <p>Status: <span id="status">not clicked yet</span></p>
+
+  <hr>
+
+  <h2>Form inputs demo</h2>
+  <form onsubmit="document.getElementById('status').textContent = 'Form submitted: ' + document.getElementById('name').value;">
+    <p>
+      <label>Name: </label>
+      <input type="text" id="name" value="Alice">
+    </p>
+    <p>
+      <label>Password: </label>
+      <input type="password" id="pw" value="secret">
+    </p>
+    <p>
+      <label>Comment: </label>
+      <textarea id="comment" rows="3" cols="40">Default text.
+Edit me.</textarea>
+    </p>
+    <p>
+      <label>Country: </label>
+      <select id="country">
+        <option value="us">United States</option>
+        <option value="uk">United Kingdom</option>
+        <option value="jp" selected>Japan</option>
+        <option value="de">Germany</option>
+      </select>
+    </p>
+    <p>
+      <label>Subscribe: </label>
+      <input type="checkbox" id="sub" checked>
+      <label>Newsletter</label>
+    </p>
+    <p>
+      <label>Plan: </label>
+      <input type="radio" name="plan" value="free" checked>
+      <label>Free</label>
+      <input type="radio" name="plan" value="pro">
+      <label>Pro</label>
+    </p>
+    <p>
+      <input type="submit" value="Submit form">
+      <input type="button" value="Say hello"
+             onclick="document.getElementById('status').textContent = 'Hello!';">
+      <button class="btn" onclick="document.getElementById('status').textContent = 'Clicked button tag';">
+        Styled button
+      </button>
+    </p>
+  </form>
+  <p>Tip: click any field, then press Tab to move to the next one. Press
+     Enter in the Name field to submit the form (which updates the status).
+     Click the dropdown to cycle through options. Click checkboxes/radios
+     to toggle them.</p>
+
+  <h2>Async demo (setTimeout)</h2>
+  <p>Click the button, then wait 2 seconds. The status should update.</p>
+  <button onclick="setTimeout(\"document.getElementById('status').textContent = 'Timer fired!';\", 2000);">
+    Schedule a 2-second timer
+  </button>
+
+  <h2>Event listener demo (addEventListener)</h2>
+  <p>This paragraph has a click listener attached via
+     <code>addEventListener</code> (not inline <code>onclick</code>).
+     Click it to fire the handler.</p>
+  <p id="listener-target">Click me — I have a JS event listener.</p>
+  <script>
+    // Define a named handler. We then attach it via addEventListener.
+    function onListenerClick() {
+        console.log("listener fired");
+        document.getElementById('status').textContent = 'Listener fired!';
+    }
+    document.getElementById('listener-target').addEventListener('click', onListenerClick);
+  </script>
+
+  <h2>text-align demo</h2>
+  <p class="centered">This paragraph is centered.</p>
+  <p class="right">This paragraph is right-aligned.</p>
+  <p>This is left-aligned (the default).</p>
+
+  <h2>display: none demo</h2>
+  <p>You should NOT see the next paragraph (it has <code>display: none</code>).</p>
+  <p class="hidden">If you can read this, display:none is broken.</p>
+  <p>Good — the hidden one didn't render.</p>
+
+  <h2>width / height demo</h2>
+  <div class="fixed-box">
+    <p>This box has <code>width: 240; height: 80</code>. Without those
+       properties it would fill the page width.</p>
+  </div>
+
+  <h2>Definition list</h2>
+  <dl>
+    <dt>Browser</dt>
+    <dd>A program that fetches and renders HTML documents.</dd>
+    <dt>HTML</dt>
+    <dd>HyperText Markup Language. The format of web pages.</dd>
+    <dt>CSS</dt>
+    <dd>Cascading Style Sheets. The styling language for HTML.</dd>
+  </dl>
+
+  <h2>Blockquote</h2>
+  <blockquote>
+    <p>"The best way to predict the future is to invent it."</p>
+    <p>— Alan Kay</p>
+  </blockquote>
+
+  <h2>Ordered list</h2>
+  <ol>
+    <li>First item</li>
+    <li>Second item with a <a href="page2.html">link</a> inside</li>
+    <li>Third item</li>
+  </ol>
+
+  <h2>Table</h2>
+  <table>
+    <tr><th>Name</th><th>Role</th><th>Year</th></tr>
+    <tr><td>Ada</td><td>Analyst</td><td>1843</td></tr>
+    <tr><td>Alan</td><td>Computing</td><td>1936</td></tr>
+    <tr><td>Grace</td><td>Compiler</td><td>1952</td></tr>
+  </table>
+
+  <h2>Long-word breaking</h2>
+  <p>If a single word is wider than the page, it should hard-break instead
+     of overflowing. Watch this verylongwordthatjustkeeongoingandgoingand
+     goingandgoingandgoingandgoingandgoingandgoingandgoingandgoingandgoing
+     goingandgoingandgoingandgoingandgoingandgoingandgoing should wrap.</p>
+
+  <h2>Zoomable content</h2>
+  <p>This paragraph is 16px by default. Press Ctrl+= to zoom in (up to 3x)
+     and Ctrl+- to zoom out (down to 0.5x). Press Ctrl+0 to reset.</p>
+
+  <h2>JavaScript interaction (links + onclick + navigation)</h2>
+  <p>Click <a href="page2.html" onclick="document.getElementById('status').textContent = 'You visited!';">this link</a>
+     to mutate the status above AND navigate to page2.html.
+     Come back here with Alt+Left to see the status persisted.</p>
+
+  <script src="app.js"></script>
+  <script>
+    // Inline script runs after the external script loads.
+    console.log("inline script after external");
+  </script>
+
+  <p>Open the terminal where you ran <code>make run</code> to see
+     <code>console.log</code> messages from the scripts.</p>
+</body>
+</html>
