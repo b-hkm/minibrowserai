@@ -2422,6 +2422,16 @@ static void layoutFlexChildren(const std::shared_ptr<Node>& node,
 
         // Natural width via a throwaway layout (row direction only; column
         // stretches to full width anyway).
+        // v2.22: When a flex item has flex-basis:0 (from `flex:1` shorthand),
+        // measure its MINIMUM content width, not the full container width.
+        // The old code always used effW=contentW, which made every item's
+        // natural width = container width. Then free = contentW - N*contentW
+        // was NEGATIVE → flex-grow never fired → items stayed at full width
+        // but were then shrunk to fit → text wrapped at tiny widths →
+        // vertical text. Now: if flex-basis is 0/0px/0%, measure at a
+        // tiny width (1px) so the natural width reflects the minimum
+        // content width. Then free = contentW - sum(min_widths) is large
+        // → grow distribution fires → items get their correct share.
         int natural = contentW;
         if (!column) {
             std::vector<Box> scratchBoxes;
@@ -2431,6 +2441,18 @@ static void layoutFlexChildren(const std::shared_ptr<Node>& node,
             int effW = contentW;
             if ((cs.declared & B_WIDTH) && cs.width >= 0)
                 effW = cs.width + (int)std::lround(cs.widthPct * contentW / 100.0f);
+            // v2.22: If flex-basis is 0/0%/0px, measure at minimum width.
+            bool basisIsZero = false;
+            if (cs.hasFlexBasis) {
+                const std::string& basis = cs.flexBasis;
+                if (basis == "0" || basis == "0px" || basis == "0%" ||
+                    basis == "0rem" || basis == "0em") {
+                    basisIsZero = true;
+                }
+            }
+            if (basisIsZero) {
+                effW = 1;  // measure minimum content width
+            }
             layoutNode(c, s, contentX, sy, effW, measureFont, cssRules,
                        scratchBoxes, scratchLinks, linkHref, scratchFloats);
             natural = measureRangeNaturalW(scratchBoxes, 0, scratchBoxes.size());
