@@ -19,3 +19,6 @@ sysroot/
 
 # Logs
 *.log
+
+# SSH keys (persistent, never commit)
+.ssh/

@@ -314,6 +314,19 @@ void Browser::showPage_(const std::string& html, const std::string& urlForDispla
     // GitHub ships the same sheet under several links), fetched through a
     // thread pool (29 sequential round-trips were ~4.5 s on github.com),
     // then appended in document order.
+    //
+    // v2.17: NON-BLOCKING CSS fetch. The old code spawned a thread pool
+    // to fetch all stylesheets in parallel, then JOINED the pool —
+    // blocking first paint by 100-300ms. The new code:
+    //   1. Renders immediately with inline <style> CSS only (already in
+    //      styleText from extractCSS above).
+    //   2. Spawns a background thread to fetch external CSS.
+    //   3. pollCssArrival_() (called from tick()) merges the external
+    //      CSS when it arrives, re-parses all CSS, re-layouts, and
+    //      triggers a repaint.
+    // This means the user sees text content within milliseconds of
+    // HTML parsing, without waiting for CSS download. The page then
+    // "snaps" into its styled form when CSS arrives (~100-300ms later).
     std::string styleText = extractCSS(dom_);
     {
         std::vector<std::string> sheetUrls;          // document order, deduped
@@ -338,33 +351,52 @@ void Browser::showPage_(const std::string& html, const std::string& urlForDispla
             };
         walkLink(dom_);
 
-        std::vector<std::string> bodies(sheetUrls.size());
-        std::atomic<size_t> next{0};
-        auto worker = [&]() {
-            for (;;) {
-                size_t i = next++;
-                if (i >= sheetUrls.size()) break;
-                const std::string& resolved = sheetUrls[i];
-                if (isRemoteUrl(resolved)) {
-                    FetchResult fr = fetchUrlCached(resolved, 15);
-                    bodies[i] = fr.ok ? fr.body : std::string{};
-                } else {
-                    bodies[i] = readFileToString(resolved);
+        if (!sheetUrls.empty()) {
+            // v2.17: Spawn a background thread to fetch external CSS.
+            // The slot is heap-held so it's safe if the Browser is
+            // destroyed while CSS is still fetching.
+            cssSlot_ = std::make_shared<CssSlot>();
+            auto slot = cssSlot_;
+            std::thread([slot, sheetUrls, this]() {
+                std::vector<std::string> bodies(sheetUrls.size());
+                std::atomic<size_t> next{0};
+                auto worker = [&]() {
+                    for (;;) {
+                        size_t i = next++;
+                        if (i >= sheetUrls.size()) break;
+                        const std::string& resolved = sheetUrls[i];
+                        if (isRemoteUrl(resolved)) {
+                            FetchResult fr = fetchUrlCached(resolved, 15);
+                            bodies[i] = fr.ok ? fr.body : std::string{};
+                        } else {
+                            bodies[i] = readFileToString(resolved);
+                        }
+                    }
+                };
+                int n = std::min<size_t>(8, std::max<size_t>(1, sheetUrls.size()));
+                {
+                    std::vector<std::thread> pool;
+                    for (int t = 0; t < n; ++t) pool.emplace_back(worker);
+                    for (auto& th : pool) th.join();
                 }
-            }
-        };
-        int n = std::min<size_t>(8, std::max<size_t>(1, sheetUrls.size()));
-        {
-            std::vector<std::thread> pool;
-            for (int t = 0; t < n; ++t) pool.emplace_back(worker);
-            for (auto& th : pool) th.join();
-        }
-        for (size_t i = 0; i < sheetUrls.size(); ++i) {
-            if (!bodies[i].empty()) {
-                styleText += "\n/* " + sheetUrls[i] + " */\n" + bodies[i];
-            } else {
-                std::cerr << "[css] could not load " << sheetUrls[i] << "\n";
-            }
+                // Concatenate the fetched CSS in document order.
+                std::string externalCss;
+                for (size_t i = 0; i < sheetUrls.size(); ++i) {
+                    if (!bodies[i].empty()) {
+                        externalCss += "\n/* " + sheetUrls[i] + " */\n" + bodies[i];
+                    } else {
+                        std::cerr << "[css] could not load " << sheetUrls[i] << "\n";
+                    }
+                }
+                // Release the thread's curl handle (short-lived thread).
+                releaseThreadCurl();
+                // Deliver the result to the UI thread via the slot.
+                if (!slot->cancelled.load()) {
+                    std::lock_guard<std::mutex> lk(slot->m);
+                    slot->externalCss = std::move(externalCss);
+                    slot->done.store(true);
+                }
+            }).detach();
         }
     }
     // Kick off the image cache in the background pool so the layout pass
@@ -374,6 +406,15 @@ void Browser::showPage_(const std::string& html, const std::string& urlForDispla
     // Uses the same source-picking logic layout will use (src / data-src /
     // srcset / <picture><source>). Must run BEFORE applyZoom_() — it
     // triggers the first relayout().
+    //
+    // v2.17: LAZY image preload. Only preload the first N images (above
+    // the fold). The rest are loaded on demand by the renderer (getImage
+    // → loadImage on cache miss) when the user scrolls to them. This
+    // reduces initial bandwidth + connection-pool pressure on image-
+    // heavy pages (DDG results with 30+ thumbnails, YouTube search with
+    // 20+ video thumbnails). The renderer's getImage() call already
+    // triggers a background fetch on cache miss, so off-screen images
+    // are simply not fetched until the user scrolls near them.
     {
         std::vector<std::string> imgUrls;
         std::function<void(const std::shared_ptr<Node>&)> walkImgs =
@@ -388,6 +429,15 @@ void Browser::showPage_(const std::string& html, const std::string& urlForDispla
                 }
             };
         walkImgs(dom_);
+        // v2.17: Only preload the first 10 images. The rest are loaded
+        // on demand by the renderer when they come into view.
+        constexpr size_t kMaxPreloadImages = 10;
+        if (imgUrls.size() > kMaxPreloadImages) {
+            std::cerr << "[img] lazy preload: " << kMaxPreloadImages
+                      << " of " << imgUrls.size()
+                      << " images (rest loaded on scroll)\n";
+            imgUrls.resize(kMaxPreloadImages);
+        }
         // Effective base (page URL, or <base href> when declared) so
         // images resolve like links/scripts/stylesheets do.
         ResourceLoader::instance().setBaseDir(effectiveBaseUrl_());
@@ -432,11 +482,16 @@ void Browser::showPage_(const std::string& html, const std::string& urlForDispla
         media::prunePlayersExcept(pageMedia);
     }
 
-    std::cerr << "[perf] cssFetch+imgPreload " << msSince(t0) << "ms\n";
+    // v2.17: perf log now says "cssInline+imgPreload" (external CSS is
+    // fetched in the background; first paint uses inline <style> only).
+    std::cerr << "[perf] cssInline+imgPreload " << msSince(t0) << "ms\n";
+    // v2.17: Store the inline styleText so pollCssArrival_ can append
+    // external CSS to it when the background fetch completes.
+    baseStyleText_ = styleText;
     baseCssRules_ = parseCSS(styleText);
     std::cerr << "[perf] parseCSS(" << styleText.size()/1024 << "KB) " << msSince(t0) << "ms\n";
     cssRules_ = baseCssRules_;
-    applyZoom_();
+    applyZoom_();   // FIRST PAINT — text visible with inline CSS only
 
     // External JS: <script src="...">. The chunks are collected here but
     // executed AFTER the first frame reaches the screen (runPendingJs_,
@@ -577,6 +632,14 @@ void Browser::tick() {
     // in the status bar). Results for superseded navigations are dropped.
     if (bridgePending_) pollBridgeResult_();
 
+    // v2.17: External CSS fetch finished? Merge it with inline CSS,
+    // re-parse, re-layout, repaint. This is the non-blocking CSS path
+    // — first paint used inline CSS only; external CSS arrives here
+    // ~100-300ms later and "snaps" the page into its styled form.
+    if (cssSlot_ && cssSlot_->done.load(std::memory_order_acquire)) {
+        pollCssArrival_();
+    }
+
     // Navigation worker finished? Continue the load on the main thread
     // (DOM/CSS/layout/JS are main-thread-only state). The slot is
     // heap-owned and shared with the worker, so this is safe even when
@@ -672,6 +735,39 @@ void Browser::pollImageArrivals_() {
         relayout_();
         frameDirty_ = true;
     }
+}
+
+// v2.17: External CSS arrived from the background fetch thread.
+// Merge it with the inline CSS (baseStyleText_), re-parse the combined
+// stylesheet, re-layout, and trigger a repaint. This "snaps" the page
+// from its unstyled (inline-CSS-only) first paint into its fully-styled
+// form — the same progressive-rendering pattern Chrome/Firefox use.
+void Browser::pollCssArrival_() {
+    if (!cssSlot_) return;
+    std::string externalCss;
+    {
+        std::lock_guard<std::mutex> lk(cssSlot_->m);
+        if (!cssSlot_->done.load()) return;
+        externalCss = std::move(cssSlot_->externalCss);
+        cssSlot_->done.store(false);
+    }
+    // Cancel the slot so a stale worker can't double-fire.
+    cssSlot_->cancelled.store(true);
+    cssSlot_.reset();
+
+    if (externalCss.empty() || !dom_) return;
+
+    // Merge: inline CSS (baseStyleText_) + external CSS (just arrived).
+    std::string combined = baseStyleText_ + externalCss;
+    std::cerr << "[css] external CSS arrived (" << externalCss.size() / 1024
+              << "KB) — re-parsing combined CSS ("
+              << combined.size() / 1024 << "KB) + re-layout\n";
+    auto t0 = std::chrono::steady_clock::now();
+    baseCssRules_ = parseCSS(combined);
+    cssRules_ = baseCssRules_;
+    relayout_();
+    frameDirty_ = true;
+    std::cerr << "[perf] cssRestyle " << msSince(t0) << "ms\n";
 }
 
 // Hand a URL to mpv (external video player). mpv + yt-dlp plays YouTube

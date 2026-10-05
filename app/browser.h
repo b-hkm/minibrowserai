@@ -160,6 +160,22 @@ private:
     Uint32 lastImageArrivalMs_ = 0;
     void pollImageArrivals_();
 
+    // v2.17: Async CSS fetch. External stylesheets are fetched in a
+    // background thread so first paint doesn't wait for CSS download
+    // (was 100-300ms blocking join). The browser renders immediately
+    // with inline <style> CSS, then re-layouts when external CSS
+    // arrives. The slot is heap-held (shared_ptr) so the worker thread
+    // is safe if the Browser is destroyed while CSS is still fetching.
+    struct CssSlot {
+        std::mutex m;
+        std::string externalCss;      // concatenated external CSS text
+        std::atomic<bool> done{false};
+        std::atomic<bool> cancelled{false};
+    };
+    std::shared_ptr<CssSlot> cssSlot_;
+    void pollCssArrival_();           // called from tick()
+    std::string baseStyleText_;       // inline CSS text (for merging with external CSS)
+
     // mpv playback (fallback only): the INTERNAL player (media/mediaplayer)
     // now plays every direct media file/URL in-page like Chrome. mpv stays
     // for yt-dlp-only targets (YouTube watch pages) and the "v" key / mpv:
