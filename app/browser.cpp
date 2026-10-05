@@ -2674,6 +2674,14 @@ bool Browser::handleEvent(const SDL_Event& e) {
                 SDL_SetWindowFullscreen(win_, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
                 return true;
             }
+            // v2.21: F1 = toggle debug bounding-box overlay.
+            if (sym == SDLK_F1) {
+                showDebugBoxes_ = !showDebugBoxes_;
+                frameDirty_ = true;
+                std::cerr << "[debug] bounding boxes " <<
+                    (showDebugBoxes_ ? "ON" : "OFF") << "\n";
+                return true;
+            }
             updateHoverCursor();
             break;
         }
@@ -3077,6 +3085,62 @@ void Browser::paint() {
         std::cerr << "[perf] render " << msSince(__renderT0) << "ms\n";
 
     SDL_RenderSetClipRect(ren_, nullptr);
+
+    // v2.21: Debug bounding-box overlay. Toggle with F1.
+    // Draws colored outlines around all VISIBLE layout boxes so we can
+    // see which boxes are too narrow (causing vertical text). Each box
+    // type gets a different color:
+    //   blue    = block (div, p, h1, etc.)
+    //   green   = inline text runs (has .lines with text)
+    //   yellow  = image
+    //   cyan    = video/audio
+    //   red     = flex container (display:flex)
+    //   orange  = link (<a>)
+    //   purple  = other/unknown
+    // Also draws the box's width as a small label so we can see which
+    // boxes are collapsing to near-zero width.
+    if (showDebugBoxes_) {
+        SDL_Rect dbgClip = { contentX(), contentY(), contentW(), contentH() };
+        SDL_RenderSetClipRect(ren_, &dbgClip);
+        for (size_t i = 0; i < layout_.boxes.size(); ++i) {
+            const auto& b = layout_.boxes[i];
+            // Skip boxes outside the viewport.
+            int absY = b.y - scrollY_ + contentY();
+            if (absY + b.h < contentY() || absY > contentY() + contentH())
+                continue;
+            // Determine color by box type.
+            Uint8 r=0, g=0, b_col=0;
+            auto sn = b.sourceNode.lock();
+            std::string tag = sn ? sn->tag : "?";
+            if (b.isVideo || b.isAudio) { r=0; g=255; b_col=255; }      // cyan
+            else if (b.isImage)         { r=255; g=255; b_col=0; }      // yellow
+            else if (b.style.display == "flex" || b.style.display == "inline-flex")
+                                          { r=255; g=0; b_col=0; }      // red
+            else if (tag == "a")         { r=255; g=165; b_col=0; }    // orange
+            else if (!b.lines.empty())   { r=0; g=255; b_col=0; }       // green
+            else                          { r=0; g=0; b_col=255; }      // blue
+            // Draw outline.
+            SDL_SetRenderDrawColor(ren_, r, g, b_col, 255);
+            SDL_Rect outline = {b.x, b.y - scrollY_ + contentY(), b.w, b.h};
+            SDL_RenderDrawRect(ren_, &outline);
+            // Draw width label (only for boxes > 30px wide and < 500px to
+            // avoid clutter).
+            if (b.w >= 5 && b.w <= 2000 && b.h >= 5) {
+                char label[64];
+                snprintf(label, sizeof(label), "%s w=%d h=%d",
+                         tag.c_str(), b.w, b.h);
+                int lw=0, lh=0;
+                SDL_Texture* lt = cachedTextTexture(ren_, font_,
+                    label, {255,0,0,255}, &lw, &lh);
+                if (lt) {
+                    SDL_Rect ld = {b.x + 2, b.y - scrollY_ + contentY() + 2,
+                                   std::min(lw, b.w - 4), lh};
+                    if (ld.w > 0) SDL_RenderCopy(ren_, lt, nullptr, &ld);
+                }
+            }
+        }
+        SDL_RenderSetClipRect(ren_, nullptr);
+    }
 
     // 1.5) Image viewer overlay: covers the content area; the chrome
     // (address bar etc.) stays visible and functional above it.

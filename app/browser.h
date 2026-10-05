@@ -133,6 +133,10 @@ private:
     bool hasDeferredJs_ = false;
     bool paintedOnce_   = false;
     bool frameDirty_    = true;   // paint as soon as the loop starts
+    // v2.21: Debug bounding-box overlay. Toggle with F1.
+    // Draws colored outlines around all layout boxes so we can see
+    // which boxes are too narrow (causing vertical text).
+    bool showDebugBoxes_ = false;
 
     // Async document fetch (see setSynchronousNavigation). The worker
     // only touches the heap-owned slot below plus its own copies; the
