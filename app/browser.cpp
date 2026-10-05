@@ -1722,7 +1722,19 @@ void Browser::fireSubmit_(std::shared_ptr<Node> form) {
     if (!onsubmit.empty()) {
         std::cout << "[Running onsubmit] " << onsubmit << "\n";
         js_.executeEvent(onsubmit, "submit", form);
-        return;
+        // v2.15: DO NOT return here. The original code returned after
+        // running onsubmit, which meant forms with an onsubmit handler
+        // NEVER actually submitted — the JS ran (e.g. setting a hidden
+        // field's value) but submitForm_ was never called, so the
+        // browser never navigated. This was the root cause of the
+        // "Enter key and Search button don't initiate search" bug:
+        // the YouTube search form (v2.14) and the DDG search form both
+        // have onsubmit handlers, so they ran the JS but never
+        // submitted. The standard browser behaviour is: onsubmit's
+        // return value controls whether to proceed (return false =
+        // cancel), but our JS engine's executeEvent doesn't surface
+        // the return value, so we always proceed. This matches the
+        // behaviour for forms WITHOUT onsubmit (which always submit).
     }
     js_.dispatchEvent("submit", form);
     submitForm_(form);
