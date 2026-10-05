@@ -318,14 +318,22 @@ static std::string videoListHtml(const std::string& lines) {
 // links that our engine handles natively. Clicking a result navigates to
 // the watch page, which the yt-dlp bridge resolves to a playable stream.
 //
+// v2.14: fixed the onsubmit JS — v2.13 used `if(!q){return false;}`
+// which crashes because `executeEvent` (jsengine.cpp:156) evaluates
+// the handler via `duk_peval_string` (top-level program eval), and
+// `return` is a SyntaxError outside a function body. The whole handler
+// failed to compile, so `document.getElementById('ytq').value` was
+// never set, and the form submitted with an empty `q` parameter.
+// v2.14 replaces the `if(...){return false;}` with a ternary that
+// sets ytq to 'site:youtube.com <query>' when q is non-empty, or ''
+// when empty — no `return` statement, no syntax error.
+//
 // The onsubmit JS runs in our Duktape engine (verified: .value getter
 // at jsbindings.cpp:365, .value setter at jsbindings.cpp:530). It reads
 // the user's typed query from the visible #ytsearch input, prefixes it
 // with "site:youtube.com ", and writes the result to the hidden #ytq
 // input which IS named (so buildFormQuery includes it in the URL). The
 // visible input has NO name attribute, so it's excluded from the URL.
-// Returns false on empty query to prevent submitting "site:youtube.com "
-// with no actual search terms.
 static const char* kSearchForm =
     "<div style=\"background:#c00; padding:10px 14px\">\n"
     "<span style=\"color:#fff; font-size:20px\"><b>YouTube</b></span>"
@@ -334,8 +342,7 @@ static const char* kSearchForm =
     "<form action=\"https://html.duckduckgo.com/html/\" method=\"get\" "
     "style=\"margin:6px 0 0 0\" "
     "onsubmit=\"var q=document.getElementById('ytsearch').value;"
-    "if(!q){return false;}"
-    "document.getElementById('ytq').value='site:youtube.com '+q;\">\n"
+    "document.getElementById('ytq').value=q?('site:youtube.com '+q):'';\">\n"
     "<input type=\"hidden\" name=\"q\" id=\"ytq\" value=\"\">\n"
     "<input id=\"ytsearch\" style=\"width:260px\" placeholder=\"Search YouTube\"> "
     "<input type=\"submit\" value=\"Search\">\n"

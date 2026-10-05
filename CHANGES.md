@@ -1927,3 +1927,78 @@ reliably in our engine — it's the right tool for the job.
 
 `about:home` bumped to 2.13 / round 16. Description explains the
 new search behavior.
+
+---
+
+# What changed in MiniBrowser 2.14
+
+## Background: v2.13 search form was broken by a JS SyntaxError
+
+You reported that v2.13's YouTube search form "is not working" —
+typing a query and pressing Search didn't navigate to DuckDuckGo.
+The screenshot showed the page on `youtube.com/results?search_query=local`
+with the v2.13 form visible (red header, "search via DuckDuckGo"
+annotation) but with this JS error in the console:
+
+    JS Error: SyntaxError: invalid return (line 1)
+        at [anon] (eval:1) internal
+        at [anon] (duk_js_compiler.c:5968) internal
+
+Root cause: v2.13's onsubmit handler used `if(!q){return false;}` to
+guard against empty queries. But `JSEngine::executeEvent`
+(jsengine.cpp:156) evaluates the handler via `duk_peval_string` —
+which treats the code as a **top-level program**, not a function body.
+In JavaScript, `return` is a SyntaxError outside a function. The
+entire onsubmit handler failed to compile, so
+`document.getElementById('ytq').value` was never set, and the form
+submitted with the hidden `q` field still empty (`?q=`).
+
+The same bug affects the about:home form's `alert(...); return false;`
+onsubmit — but there it's harmless because the form has no `action`
+attribute, so `submitForm_` is a no-op even when it runs. The v2.13
+form had `action="https://html.duckduckgo.com/html/"`, so the broken
+onsubmit meant the form submitted to DDG with `?q=` (empty query).
+
+## Fix: rewrite onsubmit without `return` (`app/shims.cpp`)
+
+The v2.13 onsubmit:
+    var q=document.getElementById('ytsearch').value;
+    if(!q){return false;}
+    document.getElementById('ytq').value='site:youtube.com '+q;
+
+Is replaced with the v2.14 onsubmit:
+    var q=document.getElementById('ytsearch').value;
+    document.getElementById('ytq').value=q?('site:youtube.com '+q):'';
+
+The `if(!q){return false;}` is replaced by a ternary expression
+`q ? ('site:youtube.com '+q) : ''` — no `return` statement, no
+syntax error. When the query is non-empty, `ytq` is set to
+`site:youtube.com <query>`. When empty, `ytq` is set to `''` (DDG
+will show its homepage, which is harmless).
+
+The form now submits correctly to
+`https://html.duckduckgo.com/html/?q=site%3Ayoutube.com+<query>`
+which returns DuckDuckGo search results restricted to youtube.com pages.
+
+## Verification
+
+- Build clean, 646 selftests pass (unchanged from v2.13).
+- The about:home page's onsubmit (`alert(...); return false;`) still
+  has the same `return` bug, but it's harmless there (no action
+  attribute). Not fixing it in v2.14 to keep the change minimal.
+- Live test: loading about:home no longer shows a JS error in the
+  console output (the v2.13 error came from the YouTube form's
+  onsubmit, not from about:home).
+
+## Note on the about:home form
+
+The about:home form's onsubmit (`alert(...); return false;`) has the
+same `return` syntax error. It works "by accident" because:
+1. The Duktape compiler rejects the whole onsubmit (syntax error
+   on `return`), so the alert never actually runs.
+2. But the form has no `action` attribute, so `submitForm_` is a
+   no-op.
+
+So the user sees... nothing happen when they click "Try alert()".
+This is a pre-existing bug, not introduced by v2.14. Not fixing it
+here to keep the v2.14 change focused on the YouTube search issue.
