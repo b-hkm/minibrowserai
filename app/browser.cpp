@@ -1116,24 +1116,26 @@ static std::string aboutHomeHtml() {
     return R"HTML(<html><head><title>MiniBrowser Home</title></head>
 <body style="font-family: sans-serif">
 <div style="background: #1a4fa0; padding: 24px">
-  <h1 style="font-size: 36px; color: #ffffff">MiniBrowser 2.10</h1>
+  <h1 style="font-size: 36px; color: #ffffff">MiniBrowser 2.13</h1>
   <p style="color: #cfe0ff">A tiny SDL2 browser with real HTTP/HTTPS, a Duktape
-  JavaScript engine and CSS styling. Round 15: better YouTube failure
-  diagnostics + yt-dlp auto-cookie. v2.9 made the browser send the full
-  Chrome 120 client-hints bundle, HTTP/2, a persistent cookie jar, and
-  Referer tracking. v2.10 fixes the YouTube watch playback issue you
-  reported: Piped's NewPipeExtractor is now globally bot-flagged by
-  YouTube (the error was "SignInConfirmNotBotException: YouTube probably
-  temporarily blocked anonymous watch access with this IP" — affects ALL
-  Piped instances, not just specific IPs). v2.10 now (a) distinguishes
-  that error from "video genuinely unavailable" in the failure message
-  and (b) auto-passes <code>--cookies-from-browser firefox</code> /
-  chrome / brave to yt-dlp when a browser profile is detected, plus
-  <code>--extractor-args youtube:player_client=android,tv_embedded,web</code>
-  to force the bot-tolerant Android client first. <b>Install yt-dlp</b>
-  (<code>pip install yt-dlp</code>) — it's the reliable path for YouTube
-  playback in 2026; Piped is now only a fallback for videos that yt-dlp
-  can't reach.</p>
+  JavaScript engine and CSS styling. Round 16: YouTube search now uses
+  DuckDuckGo with <code>site:youtube.com</code> filter. v2.12 fixed the
+  buzz sound by switching audio output from S16 to F32 (FFmpeg decoders
+  produce float natively; the S16 quantization was the buzz source).
+  v2.13 fixes the YouTube search: typing in the YouTube search box used
+  to submit to <code>youtube.com/results</code> which is a JS-heavy SPA
+  whose <code>ytInitialData</code> is served inconsistently — the
+  extractor often found 0 videos and showed "YouTube returned no
+  readable results". Now the search box submits to
+  <code>html.duckduckgo.com/html</code> with a
+  <code>site:youtube.com</code> filter, so results are restricted to
+  YouTube pages but rendered as plain HTML links that work in our
+  engine. Clicking a result navigates to the watch page, which the
+  yt-dlp bridge resolves to a playable stream. On top of v2.12's F32
+  audio, v2.11's lazy swr init, v2.10's yt-dlp auto-cookie, v2.9's full
+  Chrome client-hints, v2.8's hybrid rendering, v2.7's Chrome UA, and
+  the internal media stack (&lt;video&gt; and &lt;audio&gt; decode
+  in-process via FFmpeg).</p>
 </div>
 <h2>Try it out</h2>
 <ul>

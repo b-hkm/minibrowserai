@@ -1449,7 +1449,14 @@ TEST(youtube_shim_never_raw_html) {
         "https://www.youtube.com/results?search_query=test", junk, ok);
     EXPECT(ok);
     EXPECT(!html.empty());
-    EXPECT(html.find("search_query") != std::string::npos);  // form kept
+    // v2.13: the search form now submits to DuckDuckGo with
+    // site:youtube.com filter (not youtube.com/results). The form has
+    // a hidden 'q' field (named, included in URL) and a visible
+    // #ytsearch input (NOT named, excluded from URL). The onsubmit
+    // JS prefixes the user's query with "site:youtube.com ".
+    EXPECT(html.find("html.duckduckgo.com/html") != std::string::npos);
+    EXPECT(html.find("ytsearch") != std::string::npos);
+    EXPECT(html.find("site:youtube.com") != std::string::npos);
     EXPECT(html.find("YouTube Lite") == std::string::npos); // branded "YouTube"
 
     // Sanity: isYouTubeUrl still classifies the host correctly — the

@@ -1861,3 +1861,69 @@ selector. We'll decide based on the logs.
   ```
   (sandbox has no audio device — expected. The user's machine will
   show `device fmt=F32` instead of `device fmt=0`.)
+
+---
+
+# What changed in MiniBrowser 2.13
+
+## Background: YouTube search showed nothing
+
+You reported that typing in the YouTube search box redirects to
+`www.youtube.com/results` which "shows nothing" — the extractor's
+"YouTube returned no readable results for this search" fallback page.
+The root cause: YouTube's `/results` page is a JS-heavy SPA whose
+`ytInitialData` JSON is served inconsistently — sometimes the JSON
+has the search results (365 `videoId` references when I tested with
+curl-impersonate), sometimes it's empty or consent-gated. Even with
+the v2.9 Chrome UA + cookie jar, the extractor often found 0 videos
+and showed the useless "try again" page.
+
+## Fix: YouTube search now submits to DuckDuckGo with `site:youtube.com`
+## filter (`app/shims.cpp`)
+
+The `kSearchForm` now submits to `https://html.duckduckgo.com/html/`
+instead of `https://www.youtube.com/results`. The onsubmit JavaScript
+handler (verified working in our Duktape engine — `.value` getter at
+`jsbindings.cpp:365`, `.value` setter at `jsbindings.cpp:530`)
+reads the user's typed query from the visible `#ytsearch` input,
+prefixes it with `site:youtube.com `, and writes the result to the
+hidden `#ytq` input (which IS named, so `buildFormQuery` includes it
+in the URL). The visible input has NO `name` attribute, so it's
+excluded from the submission URL.
+
+Result: typing "rick astley" in the YouTube search box now navigates
+to `https://html.duckduckgo.com/html/?q=site%3Ayoutube.com+rick+astley`
+which returns DuckDuckGo search results **restricted to youtube.com
+pages** — the same content YouTube's own search would return, but
+rendered as plain HTML links that our engine handles natively.
+Clicking a result navigates to the watch page, which the yt-dlp
+bridge resolves to a playable stream.
+
+The form is still branded "YouTube" (red header bar) with a small
+"search via DuckDuckGo (site:youtube.com)" annotation so the user
+knows what's happening.
+
+## Why not fix YouTube's actual search instead?
+
+I considered improving the `kVideoWalk` JS to handle more renderer
+types (`richItemRenderer` etc.), but the root cause isn't the walker
+— it's that YouTube serves the search page inconsistently. Sometimes
+`ytInitialData` has the videos, sometimes it doesn't (consent gate,
+A/B test, region variant). Even if I improve the walker, the user
+would still see "no readable results" on the inconsistent days.
+DuckDuckGo's `html` endpoint is fully server-rendered and works
+reliably in our engine — it's the right tool for the job.
+
+## Verification
+
+- Build clean, 646 selftests pass (was 644 in v2.12 — added 2 new
+  assertions for the new search form: `html.duckduckgo.com/html`
+  in the form action, `ytsearch` input ID, `site:youtube.com` in
+  the onsubmit JS).
+- The `youtube_shim_never_raw_html` test now asserts the v2.13
+  contract: search form submits to DDG, not youtube.com/results.
+
+## About page
+
+`about:home` bumped to 2.13 / round 16. Description explains the
+new search behavior.
