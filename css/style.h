@@ -78,6 +78,9 @@ enum StyleBits : uint64_t {
     B_GRID_POS        = 1ull << 43,   // grid-column / grid-row on a child
     B_OVERFLOW        = 1ull << 44,   // overflow: hidden/clip
     B_CLIP            = 1ull << 45,   // clip-path/clip zero-area (sr-only)
+    B_FLEX_GROW       = 1ull << 46,   // flex-grow on a flex item
+    B_FLEX_SHRINK     = 1ull << 47,   // flex-shrink on a flex item
+    B_FLEX_BASIS      = 1ull << 48,   // flex-basis on a flex item
 };
 
 struct Style {
@@ -168,6 +171,15 @@ struct Style {
     std::string alignItems = "stretch";      // stretch|center|flex-start|flex-end
     int flexGap = 0;
     bool hasFlexGap = false;
+    // v2.20: flex item properties (flex-grow, flex-shrink, flex-basis).
+    // Without these, items with `flex: 1` (shorthand for grow:1, shrink:1,
+    // basis:0) stay at 0 width — text wraps after a few characters.
+    float flexGrow = 0;
+    float flexShrink = 1;
+    std::string flexBasis = "auto";
+    bool hasFlexGrow = false;
+    bool hasFlexShrink = false;
+    bool hasFlexBasis = false;
 
     // box-sizing: "content-box" (default) | "border-box"
     std::string boxSizing = "content-box";

@@ -354,6 +354,9 @@ static uint64_t diffBits(const Style& a, const Style& b) {
                                           m |= B_OFFSETS;
     if (a.cssFloat != b.cssFloat)         m |= B_FLOAT;
     if (a.flexDirection != b.flexDirection) m |= B_FLEX_DIR;
+    if (a.flexGrow != b.flexGrow)         m |= B_FLEX_GROW;
+    if (a.flexShrink != b.flexShrink)     m |= B_FLEX_SHRINK;
+    if (a.flexBasis != b.flexBasis)       m |= B_FLEX_BASIS;
     if (a.justifyContent != b.justifyContent) m |= B_JUSTIFY;
     if (a.alignItems != b.alignItems)     m |= B_ALIGN_ITEMS;
     if (a.flexGap != b.flexGap)           m |= B_GAP;
@@ -430,6 +433,9 @@ void mergeDeclared(Style& dst, const Style& src) {
     }
     if (has(B_FLOAT))          { dst.cssFloat = src.cssFloat; dst.hasFloat = true; }
     if (has(B_FLEX_DIR))       { dst.flexDirection = src.flexDirection; }
+    if (has(B_FLEX_GROW))      { dst.flexGrow = src.flexGrow; dst.hasFlexGrow = true; }
+    if (has(B_FLEX_SHRINK))    { dst.flexShrink = src.flexShrink; dst.hasFlexShrink = true; }
+    if (has(B_FLEX_BASIS))     { dst.flexBasis = src.flexBasis; dst.hasFlexBasis = true; }
     if (has(B_JUSTIFY))        { dst.justifyContent = src.justifyContent; }
     if (has(B_ALIGN_ITEMS))    { dst.alignItems = src.alignItems; }
     if (has(B_GAP))            { dst.flexGap = src.flexGap; dst.hasFlexGap = true; }
@@ -1223,6 +1229,46 @@ Style applyStyle(const Style& base, const std::string& css) {
                 if (v == "column-reverse") v = "column";
                 s.flexDirection = v;
             }
+        // v2.20: flex item properties — flex-grow, flex-shrink, flex-basis,
+        // and the `flex` shorthand. Without these, items with `flex: 1`
+        // (shorthand for grow:1, shrink:1, basis:0) stay at 0 width.
+        } else if (prop == "flex-grow") {
+            try { s.flexGrow = std::stof(trim(val)); s.hasFlexGrow = true; }
+            catch (...) {}
+        } else if (prop == "flex-shrink") {
+            try { s.flexShrink = std::stof(trim(val)); s.hasFlexShrink = true; }
+            catch (...) {}
+        } else if (prop == "flex-basis") {
+            s.flexBasis = toLower(trim(val));
+            s.hasFlexBasis = true;
+        } else if (prop == "flex") {
+            // flex shorthand: <flex-grow> <flex-shrink> <flex-basis>
+            // Common values: "1" (= 1 1 0%), "auto" (= 1 1 auto),
+            // "none" (= 0 0 auto), "0 0 auto", "1 1 0%"
+            std::string v = toLower(trim(val));
+            if (v == "none") {
+                s.flexGrow = 0; s.flexShrink = 0; s.flexBasis = "auto";
+            } else if (v == "auto") {
+                s.flexGrow = 1; s.flexShrink = 1; s.flexBasis = "auto";
+            } else {
+                // Parse up to 3 space-separated values
+                std::istringstream ss(v);
+                std::string tok;
+                int part = 0;
+                while (ss >> tok) {
+                    if (part == 0) {
+                        try { s.flexGrow = std::stof(tok); } catch (...) {}
+                    } else if (part == 1) {
+                        try { s.flexShrink = std::stof(tok); } catch (...) {}
+                    } else if (part == 2) {
+                        s.flexBasis = tok;
+                    }
+                    part++;
+                }
+                // If only one value, default shrink=1 and basis=0
+                if (part == 1) { s.flexShrink = 1; s.flexBasis = "0%"; }
+            }
+            s.hasFlexGrow = true; s.hasFlexShrink = true; s.hasFlexBasis = true;
         } else if (prop == "justify-content") {
             std::string v = toLower(trim(val));
             if (v == "flex-start" || v == "center" || v == "space-between" ||

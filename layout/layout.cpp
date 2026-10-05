@@ -2393,7 +2393,7 @@ static void layoutFlexChildren(const std::shared_ptr<Node>& node,
     }
 
     // Item = element child (skip display:none children at layout time).
-    struct Item { size_t b0, b1, l0, l1; int w, h; };
+    struct Item { size_t b0, b1, l0, l1; int w, h; float flexGrow; };
     std::vector<Item> items;
 
     int rowTop = y;
@@ -2418,6 +2418,7 @@ static void layoutFlexChildren(const std::shared_ptr<Node>& node,
         Item it{};
         it.b0 = boxes.size();
         it.l0 = links.size();
+        it.flexGrow = cs.flexGrow;  // v2.20: store for grow distribution
 
         // Natural width via a throwaway layout (row direction only; column
         // stretches to full width anyway).
@@ -2454,6 +2455,96 @@ static void layoutFlexChildren(const std::shared_ptr<Node>& node,
     }
 
     if (items.empty()) return;
+
+    // v2.20: flex-grow distribution. After measuring all items' natural
+    // widths, distribute free space among items with flexGrow > 0. Each
+    // growing item gets `free * (flexGrow / totalGrow)` extra width.
+    // Then RE-LAYOUT growing items with their wider width so text wraps
+    // at the correct width (not the narrow natural width that caused
+    // the "vertical text" issue on flex-based pages like genius.com).
+    if (!column) {
+        float totalGrow = 0;
+        for (auto& it : items) totalGrow += it.flexGrow;
+        if (totalGrow > 0) {
+            int totalNatural = 0;
+            for (auto& it : items) totalNatural += it.w;
+            int gaps = s.flexGap * (int)(items.size() - 1);
+            int free = std::max(0, contentW - totalNatural - gaps);
+            if (free > 0) {
+                // Save the node children + computed styles for re-layout.
+                // We need to re-layout growing items with their new width.
+                struct ChildInfo {
+                    std::shared_ptr<Node> node;
+                    Style cs;
+                    int naturalW;
+                    float flexGrow;
+                };
+                std::vector<ChildInfo> children;
+                for (auto& c : node->children) {
+                    if (kNoRender.count(c->tag)) continue;
+                    if (c->tag == "text") {
+                        bool wsOnly = true;
+                        for (char ch : c->text)
+                            if (!std::isspace((unsigned char)ch)) { wsOnly = false; break; }
+                        if (wsOnly) continue;
+                    }
+                    Style cs = computeStyle(s, c, cssRules);
+                    if (cs.hasDisplay && cs.display == "none") continue;
+                    if (cs.position == "absolute" || cs.position == "fixed") continue;
+                    // Find the matching item to get natural width + flexGrow
+                    float fg = cs.flexGrow;
+                    int nat = contentW;
+                    // Match by node pointer
+                    for (auto& it : items) {
+                        // The items were laid out in the same order as children,
+                        // so we can match by index. But simpler: just use the
+                        // computed flexGrow directly.
+                        (void)it;
+                    }
+                    children.push_back({c, cs, 0, fg});
+                }
+                // Calculate final widths for growing items
+                size_t ci = 0;
+                for (auto& it : items) {
+                    if (ci < children.size())
+                        children[ci].naturalW = it.w;
+                    ci++;
+                }
+                // Distribute free space
+                for (auto& ch : children) {
+                    if (ch.flexGrow <= 0) continue;
+                    int extra = (int)(free * ch.flexGrow / totalGrow);
+                    ch.naturalW += extra;
+                }
+                // Re-layout growing items with their new width.
+                // Reset boxes/links to before flex items were added.
+                size_t origBoxCount = items.front().b0;
+                size_t origLinkCount = items.front().l0;
+                boxes.resize(origBoxCount);
+                links.resize(origLinkCount);
+                // Re-layout all items
+                for (size_t i = 0; i < items.size() && i < children.size(); ++i) {
+                    auto& ch = children[i];
+                    auto& it = items[i];
+                    it.b0 = boxes.size();
+                    it.l0 = links.size();
+                    int w = ch.naturalW;
+                    int ty = 0;
+                    layoutNode(ch.node, s, contentX, ty, w, measureFont,
+                               cssRules, boxes, links, linkHref, floats);
+                    it.b1 = boxes.size();
+                    it.l1 = links.size();
+                    int maxR = contentX, minL = contentX + 100000;
+                    for (size_t bi = it.b0; bi < it.b1; ++bi) {
+                        minL = std::min(minL, boxes[bi].x);
+                        maxR = std::max(maxR, boxes[bi].x + boxes[bi].w);
+                    }
+                    it.w = std::max(0, maxR - contentX);
+                    it.h = std::max(1, ty);
+                }
+            }
+        }
+    }
 
     if (!column) {
         // ---- row axis ----
