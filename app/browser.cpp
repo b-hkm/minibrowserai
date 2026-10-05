@@ -1465,6 +1465,39 @@ void Browser::navigate(const std::string& rawTarget) {
     size_t b = target.find_last_not_of(" \t\r\n");
     target = target.substr(a, b - a + 1);
 
+    // v2.16: DuckDuckGo redirect URL unwrapping. DDG result links use
+    // the format:
+    //   https://duckduckgo.com/l/?uddg=<URL-encoded-target>&rut=<token>
+    // When clicked, DDG's server returns a 200 with a JS redirect page:
+    //   <script>window.parent.location.replace("<target>")</script>
+    //   <noscript><meta http-equiv='refresh' content='0;URL=<target>'></noscript>
+    // Our browser doesn't support window.parent.location.replace() or
+    // meta refresh, so the user sees a blank page instead of the target
+    // site. Fix: detect the DDG redirect URL, decode the 'uddg' parameter,
+    // and navigate directly to the target site — bypassing DDG's redirect
+    // endpoint entirely.
+    {
+        size_t ddgPos = target.find("duckduckgo.com/l/");
+        if (ddgPos != std::string::npos) {
+            size_t qPos = target.find("uddg=", ddgPos);
+            if (qPos != std::string::npos) {
+                size_t vStart = qPos + 5;  // length of "uddg="
+                size_t vEnd = target.find('&', vStart);
+                if (vEnd == std::string::npos) vEnd = target.size();
+                std::string encoded = target.substr(vStart, vEnd - vStart);
+                std::string decoded = urlDecode(encoded);
+                if (!decoded.empty() &&
+                    (decoded.compare(0, 7, "http://") == 0 ||
+                     decoded.compare(0, 8, "https://") == 0)) {
+                    std::cerr << "[nav] DDG redirect unwrapped: "
+                              << target.substr(0, 60) << "..."
+                              << " -> " << decoded.substr(0, 80) << "\n";
+                    target = decoded;
+                }
+            }
+        }
+    }
+
     // mpv: pseudo-scheme — the YouTube watch pages carry a "Play in mpv"
     // button linking here. Hands the URL to mpv (yt-dlp resolves YouTube
     // streams); the browser stays where it is.
