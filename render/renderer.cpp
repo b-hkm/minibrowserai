@@ -55,7 +55,15 @@ struct TextKeyHash {
 };
 struct TextTex { SDL_Texture* tex; int w, h; };
 static std::unordered_map<TextKey, TextTex, TextKeyHash> g_textCache;
-static const size_t kTextCacheCap = 12000;
+// v2.18: increased from 12,000 to 50,000. Text-heavy pages (Wikipedia
+// articles, DDG search results with snippets, GitHub readmes) can have
+// 500+ unique text runs (each sentence/word is a separate texture
+// because of font/color variations). At 12,000 the cache overflowed
+// and CLEARED ALL entries — causing a 100-500ms spike on the next
+// render as every text run became a cache miss (TTF_RenderUTF8_Blended
+// is 1-5ms per call). At 50,000 the cache survives most pages without
+// overflow, so scrolling is smooth (cache hits only).
+static const size_t kTextCacheCap = 50000;
 
 SDL_Texture* cachedTextTexture(SDL_Renderer* ren, TTF_Font* font,
                                const std::string& utf8, SDL_Color color,

@@ -277,7 +277,14 @@ struct MeasureKeyHash {
 };
 struct MeasureVal { int w, h; };
 static std::unordered_map<MeasureKey, MeasureVal, MeasureKeyHash> g_measure;
-static const size_t kMeasureCap = 60000;
+// v2.18: increased from 60,000 to 200,000. The measure cache stores
+// (font, text) → (width, height) pairs so the layout engine doesn't
+// call TTF_SizeUTF8 for repeated words. At 60,000 entries, text-heavy
+// pages (Wikipedia, GitHub) with many unique words across multiple
+// font sizes could overflow the cache and clear ALL entries — causing
+// every word measurement to be a cache miss on the next layout pass.
+// At 200,000 the cache survives most pages without overflow.
+static const size_t kMeasureCap = 200000;
 
 bool measureTextCached(TTF_Font* font, const std::string& text, int& w, int& h) {
     w = h = 0;

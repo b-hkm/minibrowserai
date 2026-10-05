@@ -3062,6 +3062,10 @@ void Browser::paint() {
     // Boxes are laid out with y starting at 0 in content coords; pass
     // scrollY_ - contentY() so they render at contentY() + (b.y - scrollY_).
     std::vector<SelectionSpan> selSpans = selectionSpans_();
+    // v2.18: render timing log so we can diagnose text-heavy page
+    // performance. The render phase (drawing all visible boxes + text
+    // textures) is where text-heavy pages spend most of their time.
+    auto __renderT0 = std::chrono::steady_clock::now();
     renderWithFocus(ren_, font_, layout_.boxes, scrollY_ - contentY(),
                     hoveredHref_,
                     finding_ ? findMatches_ : std::vector<std::pair<int,int>>{},
@@ -3069,6 +3073,8 @@ void Browser::paint() {
                     focusedNode_,
                     focusedNode_ ? focusedCaret() : -1,
                     selSpans.empty() ? nullptr : &selSpans);
+    if (!paintedOnce_)
+        std::cerr << "[perf] render " << msSince(__renderT0) << "ms\n";
 
     SDL_RenderSetClipRect(ren_, nullptr);
 
