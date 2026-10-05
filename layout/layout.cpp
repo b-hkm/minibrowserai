@@ -2442,15 +2442,27 @@ static void layoutFlexChildren(const std::shared_ptr<Node>& node,
             if ((cs.declared & B_WIDTH) && cs.width >= 0)
                 effW = cs.width + (int)std::lround(cs.widthPct * contentW / 100.0f);
             // v2.22: If flex-basis is 0/0%/0px, measure at minimum width.
-            bool basisIsZero = false;
+            // v2.23: ALSO measure at minimum width when flexGrow > 0 with
+            // flex-basis:auto (no explicit width). The v2.22 fix only
+            // caught 'flex:1' (= basis:0) but missed 'flex-grow:1'
+            // (which leaves basis at 'auto'). With basis:auto, the item
+            // was measured at contentW → free was negative → grow never
+            // fired → items stayed at w=43 (minimum content width).
+            bool measureAtMin = false;
             if (cs.hasFlexBasis) {
                 const std::string& basis = cs.flexBasis;
                 if (basis == "0" || basis == "0px" || basis == "0%" ||
                     basis == "0rem" || basis == "0em") {
-                    basisIsZero = true;
+                    measureAtMin = true;
                 }
             }
-            if (basisIsZero) {
+            // v2.23: Also measure at min when flex-grow > 0 and no
+            // explicit width — the item should grow from its minimum
+            // content size, not from the full container width.
+            if (cs.flexGrow > 0 && !((cs.declared & B_WIDTH) && cs.width >= 0)) {
+                measureAtMin = true;
+            }
+            if (measureAtMin) {
                 effW = 1;  // measure minimum content width
             }
             layoutNode(c, s, contentX, sy, effW, measureFont, cssRules,
