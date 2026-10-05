@@ -2682,6 +2682,25 @@ bool Browser::handleEvent(const SDL_Event& e) {
                     (showDebugBoxes_ ? "ON" : "OFF") << "\n";
                 return true;
             }
+            // v2.24: F2/F3 = adjust font scale (debug — try changing
+            // text size to see if the vertical text is a font-size issue).
+            // F4 = toggle forced min-width 200px on all flex items (debug).
+            if (sym == SDLK_F2) {
+                debugFontScale_ = std::min(2.0f, debugFontScale_ + 0.1f);
+                setGlobalZoom(debugFontScale_);
+                if (dom_) { relayout_(); }
+                frameDirty_ = true;
+                std::cerr << "[debug] font scale = " << debugFontScale_ << "\n";
+                return true;
+            }
+            if (sym == SDLK_F3) {
+                debugFontScale_ = std::max(0.3f, debugFontScale_ - 0.1f);
+                setGlobalZoom(debugFontScale_);
+                if (dom_) { relayout_(); }
+                frameDirty_ = true;
+                std::cerr << "[debug] font scale = " << debugFontScale_ << "\n";
+                return true;
+            }
             updateHoverCursor();
             break;
         }
@@ -3097,8 +3116,9 @@ void Browser::paint() {
     //   red     = flex container (display:flex)
     //   orange  = link (<a>)
     //   purple  = other/unknown
-    // Also draws the box's width as a small label so we can see which
-    // boxes are collapsing to near-zero width.
+    // v2.24: Label now shows MORE info: tag, w, h, display, flexGrow,
+    // flexBasis, fontSize, class — so we can see exactly which CSS
+    // properties are (or aren't) being applied to each box.
     if (showDebugBoxes_) {
         SDL_Rect dbgClip = { contentX(), contentY(), contentW(), contentH() };
         SDL_RenderSetClipRect(ren_, &dbgClip);
@@ -3123,12 +3143,21 @@ void Browser::paint() {
             SDL_SetRenderDrawColor(ren_, r, g, b_col, 255);
             SDL_Rect outline = {b.x, b.y - scrollY_ + contentY(), b.w, b.h};
             SDL_RenderDrawRect(ren_, &outline);
-            // Draw width label (only for boxes > 30px wide and < 500px to
-            // avoid clutter).
-            if (b.w >= 5 && b.w <= 2000 && b.h >= 5) {
-                char label[64];
-                snprintf(label, sizeof(label), "%s w=%d h=%d",
-                         tag.c_str(), b.w, b.h);
+            // v2.24: Enhanced label with more CSS info.
+            if (b.w >= 5 && b.h >= 5) {
+                // Get class name (truncated)
+                std::string cls;
+                if (sn && sn->attrs.count("class"))
+                    cls = sn->attrs["class"].substr(0, 30);
+                char label[256];
+                snprintf(label, sizeof(label),
+                    "%s w=%d h=%d disp=%s fg=%.1f fb=%s fs=%.0f %s",
+                    tag.c_str(), b.w, b.h,
+                    b.style.display.c_str(),
+                    b.style.flexGrow,
+                    b.style.flexBasis.c_str(),
+                    b.style.fontSize,
+                    cls.c_str());
                 int lw=0, lh=0;
                 SDL_Texture* lt = cachedTextTexture(ren_, font_,
                     label, {255,0,0,255}, &lw, &lh);

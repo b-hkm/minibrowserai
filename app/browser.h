@@ -137,6 +137,10 @@ private:
     // Draws colored outlines around all layout boxes so we can see
     // which boxes are too narrow (causing vertical text).
     bool showDebugBoxes_ = false;
+    // v2.24: Debug font scale (F2/F3 to adjust). Separate from zoom_
+    // so the user can test different text sizes without affecting the
+    // page zoom. Uses setGlobalZoom() internally.
+    float debugFontScale_ = 1.0f;
 
     // Async document fetch (see setSynchronousNavigation). The worker
     // only touches the heap-owned slot below plus its own copies; the
