@@ -3106,69 +3106,61 @@ void Browser::paint() {
     SDL_RenderSetClipRect(ren_, nullptr);
 
     // v2.21: Debug bounding-box overlay. Toggle with F1.
-    // Draws colored outlines around all VISIBLE layout boxes so we can
-    // see which boxes are too narrow (causing vertical text). Each box
-    // type gets a different color:
-    //   blue    = block (div, p, h1, etc.)
-    //   green   = inline text runs (has .lines with text)
-    //   yellow  = image
-    //   cyan    = video/audio
-    //   red     = flex container (display:flex)
-    //   orange  = link (<a>)
-    //   purple  = other/unknown
-    // v2.24: Label now shows MORE info: tag, w, h, display, flexGrow,
-    // flexBasis, fontSize, class — so we can see exactly which CSS
-    // properties are (or aren't) being applied to each box.
-    if (showDebugBoxes_) {
+    // v2.25: Fixed segfault — added null checks for font_ and ren_,
+    // and guard against zero/negative box dimensions.
+    if (showDebugBoxes_ && font_ && ren_) {
         SDL_Rect dbgClip = { contentX(), contentY(), contentW(), contentH() };
-        SDL_RenderSetClipRect(ren_, &dbgClip);
-        for (size_t i = 0; i < layout_.boxes.size(); ++i) {
-            const auto& b = layout_.boxes[i];
-            // Skip boxes outside the viewport.
-            int absY = b.y - scrollY_ + contentY();
-            if (absY + b.h < contentY() || absY > contentY() + contentH())
-                continue;
-            // Determine color by box type.
-            Uint8 r=0, g=0, b_col=0;
-            auto sn = b.sourceNode.lock();
-            std::string tag = sn ? sn->tag : "?";
-            if (b.isVideo || b.isAudio) { r=0; g=255; b_col=255; }      // cyan
-            else if (b.isImage)         { r=255; g=255; b_col=0; }      // yellow
-            else if (b.style.display == "flex" || b.style.display == "inline-flex")
-                                          { r=255; g=0; b_col=0; }      // red
-            else if (tag == "a")         { r=255; g=165; b_col=0; }    // orange
-            else if (!b.lines.empty())   { r=0; g=255; b_col=0; }       // green
-            else                          { r=0; g=0; b_col=255; }      // blue
-            // Draw outline.
-            SDL_SetRenderDrawColor(ren_, r, g, b_col, 255);
-            SDL_Rect outline = {b.x, b.y - scrollY_ + contentY(), b.w, b.h};
-            SDL_RenderDrawRect(ren_, &outline);
-            // v2.24: Enhanced label with more CSS info.
-            if (b.w >= 5 && b.h >= 5) {
-                // Get class name (truncated)
-                std::string cls;
-                if (sn && sn->attrs.count("class"))
-                    cls = sn->attrs["class"].substr(0, 30);
-                char label[256];
-                snprintf(label, sizeof(label),
-                    "%s w=%d h=%d disp=%s fg=%.1f fb=%s fs=%.0f %s",
-                    tag.c_str(), b.w, b.h,
-                    b.style.display.c_str(),
-                    b.style.flexGrow,
-                    b.style.flexBasis.c_str(),
-                    b.style.fontSize,
-                    cls.c_str());
-                int lw=0, lh=0;
-                SDL_Texture* lt = cachedTextTexture(ren_, font_,
-                    label, {255,0,0,255}, &lw, &lh);
-                if (lt) {
-                    SDL_Rect ld = {b.x + 2, b.y - scrollY_ + contentY() + 2,
-                                   std::min(lw, b.w - 4), lh};
-                    if (ld.w > 0) SDL_RenderCopy(ren_, lt, nullptr, &ld);
+        if (dbgClip.w > 0 && dbgClip.h > 0) {
+            SDL_RenderSetClipRect(ren_, &dbgClip);
+            for (size_t i = 0; i < layout_.boxes.size(); ++i) {
+                const auto& b = layout_.boxes[i];
+                if (b.w <= 0 || b.h <= 0) continue;  // skip zero-size
+                // Skip boxes outside the viewport.
+                int absY = b.y - scrollY_ + contentY();
+                if (absY + b.h < contentY() || absY > contentY() + contentH())
+                    continue;
+                // Determine color by box type.
+                Uint8 r=0, g=0, b_col=0;
+                auto sn = b.sourceNode.lock();
+                std::string tag = sn ? sn->tag : "?";
+                if (b.isVideo || b.isAudio) { r=0; g=255; b_col=255; }
+                else if (b.isImage)         { r=255; g=255; b_col=0; }
+                else if (b.style.display == "flex" || b.style.display == "inline-flex")
+                                              { r=255; g=0; b_col=0; }
+                else if (tag == "a")         { r=255; g=165; b_col=0; }
+                else if (!b.lines.empty())   { r=0; g=255; b_col=0; }
+                else                          { r=0; g=0; b_col=255; }
+                SDL_SetRenderDrawColor(ren_, r, g, b_col, 255);
+                SDL_Rect outline = {b.x, b.y - scrollY_ + contentY(),
+                                    b.w > 0 ? b.w : 1, b.h > 0 ? b.h : 1};
+                SDL_RenderDrawRect(ren_, &outline);
+                // v2.24: Enhanced label with CSS info.
+                // v2.25: Shorter label to avoid buffer issues, and
+                // only draw if box is wide enough (w >= 20).
+                if (b.w >= 20) {
+                    std::string cls;
+                    if (sn && sn->attrs.count("class"))
+                        cls = sn->attrs["class"].substr(0, 20);
+                    char label[128];
+                    snprintf(label, sizeof(label),
+                        "%s w=%d h=%d d=%s fg=%.0f fs=%.0f",
+                        tag.c_str(), b.w, b.h,
+                        b.style.display.c_str(),
+                        b.style.flexGrow,
+                        b.style.fontSize);
+                    int lw=0, lh=0;
+                    SDL_Texture* lt = cachedTextTexture(ren_, font_,
+                        label, {255,0,0,255}, &lw, &lh);
+                    if (lt && lw > 0 && lh > 0) {
+                        SDL_Rect ld = {b.x + 2, b.y - scrollY_ + contentY() + 2,
+                                       std::min(lw, b.w - 4), lh};
+                        if (ld.w > 0 && ld.h > 0)
+                            SDL_RenderCopy(ren_, lt, nullptr, &ld);
+                    }
                 }
             }
+            SDL_RenderSetClipRect(ren_, nullptr);
         }
-        SDL_RenderSetClipRect(ren_, nullptr);
     }
 
     // 1.5) Image viewer overlay: covers the content area; the chrome
