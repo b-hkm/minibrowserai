@@ -19,6 +19,178 @@ void clearMediaTextures();
 static std::unordered_map<std::string, SDL_Texture*> g_textureCache;
 
 // ---------------------------------------------------------------------------
+// v2.19: GLYPH ATLAS — per-character text rendering
+//
+// The v2.18 approach cached each unique LINE of text as one texture
+// (cachedTextTexture). For text-heavy pages (Wikipedia articles), each
+// line is a unique string → cache miss → TTF_RenderUTF8_Blended (1-5ms
+// per line). 100 unique lines = 100-500ms spike on first render.
+//
+// The glyph atlas renders each CHARACTER once as a small white texture
+// (~10x20px). Text is then composed by blitting individual glyphs with
+// SDL_SetTextureColorMod for coloring. This is O(unique_chars) creation
+// (~100 ASCII chars × 0.5ms = 50ms one-time) instead of O(unique_lines)
+// (100+ lines × 5ms = 500ms+). Subsequent renders are pure SDL_RenderCopy
+// blits — no TTF_RenderUTF8_Blended at all.
+//
+// The approach is identical to how Chrome (DirectWrite glyph cache),
+// Firefox (WebRender glyph atlas), and SDL2 game engines handle text.
+// ---------------------------------------------------------------------------
+
+struct GlyphKey {
+    TTF_Font* font;
+    uint32_t  codepoint;
+    bool operator==(const GlyphKey& o) const {
+        return font == o.font && codepoint == o.codepoint;
+    }
+};
+struct GlyphKeyHash {
+    size_t operator()(const GlyphKey& k) const {
+        return std::hash<TTF_Font*>()(k.font) ^
+               (std::hash<uint32_t>()(k.codepoint) << 1);
+    }
+};
+struct GlyphEntry {
+    SDL_Texture* tex = nullptr;
+    int w = 0, h = 0;  // advance width + height
+};
+static std::unordered_map<GlyphKey, GlyphEntry, GlyphKeyHash> g_glyphCache;
+static const size_t kGlyphCacheCap = 5000;
+
+// Get (or create) a cached glyph texture for a single Unicode codepoint.
+// The glyph is rendered in WHITE so SDL_SetTextureColorMod can tint it
+// to any color at draw time (no per-color cache entries needed).
+static GlyphEntry* getGlyph(SDL_Renderer* ren, TTF_Font* font,
+                            uint32_t cp) {
+    GlyphKey key{font, cp};
+    auto it = g_glyphCache.find(key);
+    if (it != g_glyphCache.end()) return &it->second;
+
+    // Encode the codepoint as UTF-8 for SDL_ttf.
+    char utf8[5] = {};
+    if (cp < 0x80) {
+        utf8[0] = (char)cp;
+    } else if (cp < 0x800) {
+        utf8[0] = (char)(0xC0 | (cp >> 6));
+        utf8[1] = (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        utf8[0] = (char)(0xE0 | (cp >> 12));
+        utf8[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        utf8[2] = (char)(0x80 | (cp & 0x3F));
+    } else {
+        utf8[0] = (char)(0xF0 | (cp >> 18));
+        utf8[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        utf8[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        utf8[3] = (char)(0x80 | (cp & 0x3F));
+    }
+
+    // Render the glyph in white (255,255,255,255). The alpha channel
+    // carries the anti-aliasing; SDL_SetTextureColorMod replaces the
+    // white with the desired text color at draw time.
+    SDL_Color white = {255, 255, 255, 255};
+    SDL_Surface* surf = TTF_RenderUTF8_Blended(font, utf8, white);
+    if (!surf) return nullptr;
+
+    GlyphEntry ent;
+    ent.w = surf->w;
+    ent.h = surf->h;
+    ent.tex = SDL_CreateTextureFromSurface(ren, surf);
+    SDL_FreeSurface(surf);
+    if (!ent.tex) return nullptr;
+
+    // Set the texture's blend mode to blend (alpha blending) so the
+    // glyph's anti-aliased edges composite correctly over backgrounds.
+    SDL_SetTextureBlendMode(ent.tex, SDL_BLENDMODE_BLEND);
+
+    if (g_glyphCache.size() >= kGlyphCacheCap) {
+        // Evict a quarter of the cache (not all — keeps it warm).
+        size_t toEvict = kGlyphCacheCap / 4;
+        auto it2 = g_glyphCache.begin();
+        for (size_t i = 0; i < toEvict && it2 != g_glyphCache.end(); ++i) {
+            if (it2->second.tex) SDL_DestroyTexture(it2->second.tex);
+            it2 = g_glyphCache.erase(it2);
+        }
+    }
+    auto [inserted, _] = g_glyphCache.emplace(std::move(key), ent);
+    return &inserted->second;
+}
+
+// Draw a text run using the glyph atlas. Falls back to the line-level
+// cachedTextTexture for very short runs (1-3 chars) where the per-glyph
+// overhead doesn't pay off.
+static void drawTextWithGlyphs(SDL_Renderer* ren, TTF_Font* font,
+                               const std::string& utf8,
+                               SDL_Color color, int x, int y,
+                               int& outW, int& outH) {
+    outW = outH = 0;
+    if (!font || utf8.empty()) return;
+
+    // Set the color modulation ONCE per run — all glyphs in this run
+    // share the same color. SDL_SetTextureColorMod multiplies the
+    // texture's RGB by this color; the glyph's alpha (anti-aliasing)
+    // is preserved.
+    // SDL_SetTextureColorMod is per-texture, so we set it inside the
+    // loop for each glyph (the glyph textures are shared across runs
+    // with different colors).
+
+    int curX = x;
+    int maxH = 0;
+    const unsigned char* s = (const unsigned char*)utf8.c_str();
+    size_t i = 0;
+    size_t len = utf8.size();
+    while (i < len) {
+        uint32_t cp = 0;
+        if (s[i] < 0x80) {
+            cp = s[i];
+            i += 1;
+        } else if (s[i] < 0xC0) {
+            // Invalid continuation byte — skip.
+            i += 1;
+            continue;
+        } else if (s[i] < 0xE0) {
+            if (i + 1 >= len) break;
+            cp = ((s[i] & 0x1F) << 6) | (s[i+1] & 0x3F);
+            i += 2;
+        } else if (s[i] < 0xF0) {
+            if (i + 2 >= len) break;
+            cp = ((s[i] & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F);
+            i += 3;
+        } else {
+            if (i + 3 >= len) break;
+            cp = ((s[i] & 0x07) << 18) | ((s[i+1] & 0x3F) << 12) |
+                 ((s[i+2] & 0x3F) << 6) | (s[i+3] & 0x3F);
+            i += 4;
+        }
+
+        // Space (U+0020): no glyph to draw, but advance the cursor.
+        if (cp == ' ') {
+            int sw = 0, sh = 0;
+            measureTextCached(font, " ", sw, sh);
+            curX += sw;
+            maxH = std::max(maxH, sh);
+            continue;
+        }
+
+        GlyphEntry* g = getGlyph(ren, font, cp);
+        if (!g || !g->tex) continue;
+        // Tint the white glyph to the desired color.
+        SDL_SetTextureColorMod(g->tex, color.r, color.g, color.b);
+        SDL_Rect dst = {curX, y, g->w, g->h};
+        SDL_RenderCopy(ren, g->tex, nullptr, &dst);
+        curX += g->w;
+        maxH = std::max(maxH, g->h);
+    }
+    outW = curX - x;
+    outH = maxH;
+}
+
+void clearGlyphCache() {
+    for (auto& [k, v] : g_glyphCache)
+        if (v.tex) SDL_DestroyTexture(v.tex);
+    g_glyphCache.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Text texture cache
 //
 // Every text run used to be rasterized and uploaded per frame:
@@ -105,6 +277,9 @@ void clearTextTextureCache() {
     for (auto& kv : g_textCache)
         if (kv.second.tex) SDL_DestroyTexture(kv.second.tex);
     g_textCache.clear();
+    // v2.19: also clear the glyph cache (glyph textures belong to the
+    // same renderer and must be released before it goes away).
+    clearGlyphCache();
 }
 
 static SDL_Texture* cachedTextureFor(SDL_Renderer* ren,
@@ -866,15 +1041,34 @@ static void renderTextAndImages(SDL_Renderer* ren, TTF_Font* font,
                 }
 
                 int tw = 0, th = 0;
-                SDL_Texture* tex = cachedTextTexture(ren, useFont, run.text,
-                                                     drawColor, &tw, &th);
-                if (getenv("MB_FONTDBG"))
-                    std::fprintf(stderr, "[draw] boxY=%d lineY=%d x=%d"
-                                         " tex=%p tw=%d th=%d font=%p"
-                                         " text='%.30s'\n",
-                                 b.y, lineY, x, (void*)tex, tw, th,
-                                 (void*)useFont, run.text.c_str());
-                if (!tex) continue;
+                // Get the font height for vertical positioning. The glyph
+                // atlas doesn't return a height until after drawing, so
+                // use TTF_FontHeight for the baseline calculation.
+                th = TTF_FontHeight(useFont);
+                // v2.19: Use glyph atlas for runs longer than 16 bytes
+                // (~8+ ASCII chars). Short runs (button labels, alt text)
+                // still use the line-level cachedTextTexture (per-color
+                // textures are fine for short text). Long runs (paragraph
+                // text, article content) use the glyph atlas —
+                // O(unique_chars) instead of O(unique_lines), eliminating
+                // the TTF_RenderUTF8_Blended bottleneck on text-heavy
+                // pages like Wikipedia.
+                bool usedGlyphAtlas = false;
+                if (run.text.size() > 16) {
+                    int gy = lineY + std::max(0, curLineH - th);
+                    drawTextWithGlyphs(ren, useFont, run.text,
+                                       drawColor, x, gy, tw, th);
+                    if (tw > 0) usedGlyphAtlas = true;
+                }
+                if (!usedGlyphAtlas) {
+                    tw = th = 0;
+                    SDL_Texture* tex = cachedTextTexture(ren, useFont, run.text,
+                                                         drawColor, &tw, &th);
+                    if (!tex) { runByteStart += run.text.size(); continue; }
+                    int ty = lineY + std::max(0, curLineH - th);
+                    SDL_Rect dst = {x, ty, tw, th};
+                    SDL_RenderCopy(ren, tex, nullptr, &dst);
+                }
                 // Selection rectangle behind the covered byte range of
                 // this run (pixel-mapped by byte fraction of the run).
                 if (span && span->endByte > runByteStart &&
@@ -895,9 +1089,12 @@ static void renderTextAndImages(SDL_Renderer* ren, TTF_Font* font,
                         SDL_RenderFillRect(ren, &srect);
                     }
                 }
-                SDL_Rect dst = {x, lineY, tw, th};
-                SDL_RenderCopy(ren, tex, nullptr, &dst);
+                // v2.19: text was already drawn by either the glyph atlas
+                // (long runs) or cachedTextTexture (short runs) above.
+                // No second SDL_RenderCopy needed — the old code had the
+                // draw call here, but it's now inside the if/else block.
                 if (run.style.underline) {
+                    SDL_Rect dst = {x, lineY, tw, th};
                     drawUnderline(ren, dst.x, dst.y, tw, th, drawColor);
                 }
                 x += tw;
