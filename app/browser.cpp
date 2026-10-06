@@ -2682,23 +2682,92 @@ bool Browser::handleEvent(const SDL_Event& e) {
                     (showDebugBoxes_ ? "ON" : "OFF") << "\n";
                 return true;
             }
-            // v2.24: F2/F3 = adjust font scale (debug — try changing
-            // text size to see if the vertical text is a font-size issue).
-            // F4 = toggle forced min-width 200px on all flex items (debug).
-            if (sym == SDLK_F2) {
-                debugFontScale_ = std::min(2.0f, debugFontScale_ + 0.1f);
-                setGlobalZoom(debugFontScale_);
+            // v2.26: Per-element CSS inspector — only affects the HOVERED
+            // element, not the whole page. Lets the user test different
+            // font sizes and widths on specific elements to diagnose
+            // the vertical text issue.
+            //   F2 = increase hovered element's font-size by 1px
+            //   F3 = decrease hovered element's font-size by 1px
+            //   F4 = increase hovered element's width by 20px
+            //   F5 = reload (already handled below)
+            if (sym == SDLK_F2 && hoveredNode_) {
+                auto n = hoveredNode_;
+                std::string style = n->attrs.count("style") ? n->attrs["style"] : "";
+                // Parse current font-size from inline style, or use computed
+                float curFs = 16;
+                // Simple: look for "font-size:" in the style string
+                size_t fpos = style.find("font-size:");
+                if (fpos != std::string::npos) {
+                    curFs = std::stof(style.substr(fpos + 10));
+                }
+                curFs += 1;
+                // Replace or append font-size
+                if (fpos != std::string::npos) {
+                    size_t end = style.find(';', fpos);
+                    if (end == std::string::npos) end = style.size();
+                    style.replace(fpos, end - fpos,
+                        "font-size:" + std::to_string((int)curFs));
+                } else {
+                    if (!style.empty() && style.back() != ';') style += ";";
+                    style += "font-size:" + std::to_string((int)curFs);
+                }
+                n->attrs["style"] = style;
                 if (dom_) { relayout_(); }
                 frameDirty_ = true;
-                std::cerr << "[debug] font scale = " << debugFontScale_ << "\n";
+                std::cerr << "[debug] hover font-size -> " << (int)curFs
+                          << "px on <" << n->tag << ">\n";
                 return true;
             }
-            if (sym == SDLK_F3) {
-                debugFontScale_ = std::max(0.3f, debugFontScale_ - 0.1f);
-                setGlobalZoom(debugFontScale_);
+            if (sym == SDLK_F3 && hoveredNode_) {
+                auto n = hoveredNode_;
+                std::string style = n->attrs.count("style") ? n->attrs["style"] : "";
+                float curFs = 16;
+                size_t fpos = style.find("font-size:");
+                if (fpos != std::string::npos) {
+                    curFs = std::stof(style.substr(fpos + 10));
+                }
+                curFs = std::max(6.0f, curFs - 1);
+                if (fpos != std::string::npos) {
+                    size_t end = style.find(';', fpos);
+                    if (end == std::string::npos) end = style.size();
+                    style.replace(fpos, end - fpos,
+                        "font-size:" + std::to_string((int)curFs));
+                } else {
+                    if (!style.empty() && style.back() != ';') style += ";";
+                    style += "font-size:" + std::to_string((int)curFs);
+                }
+                n->attrs["style"] = style;
                 if (dom_) { relayout_(); }
                 frameDirty_ = true;
-                std::cerr << "[debug] font scale = " << debugFontScale_ << "\n";
+                std::cerr << "[debug] hover font-size -> " << (int)curFs
+                          << "px on <" << n->tag << ">\n";
+                return true;
+            }
+            // v2.26: F4 = increase hovered element's width by 20px
+            if (sym == SDLK_F4 && hoveredNode_) {
+                auto n = hoveredNode_;
+                std::string style = n->attrs.count("style") ? n->attrs["style"] : "";
+                // Parse current width from inline style
+                float curW = 0;
+                size_t wpos = style.find("width:");
+                if (wpos != std::string::npos) {
+                    curW = std::stof(style.substr(wpos + 6));
+                }
+                curW = (curW > 0 ? curW : 100) + 20;
+                if (wpos != std::string::npos) {
+                    size_t end = style.find(';', wpos);
+                    if (end == std::string::npos) end = style.size();
+                    style.replace(wpos, end - wpos,
+                        "width:" + std::to_string((int)curW) + "px");
+                } else {
+                    if (!style.empty() && style.back() != ';') style += ";";
+                    style += "width:" + std::to_string((int)curW) + "px";
+                }
+                n->attrs["style"] = style;
+                if (dom_) { relayout_(); }
+                frameDirty_ = true;
+                std::cerr << "[debug] hover width -> " << (int)curW
+                          << "px on <" << n->tag << ">\n";
                 return true;
             }
             updateHoverCursor();
